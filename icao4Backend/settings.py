@@ -153,8 +153,13 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
+# 开发环境下的静态文件目录
+STATICFILES_DIRS = [
+    BASE_DIR / 'static',
+]
+
 # Media files (用户上传的文件)
-MEDIA_URL = '/media/'
+MEDIA_URL = '/upload/'
 MEDIA_ROOT = BASE_DIR / 'upload'
 
 # Default primary key field type
@@ -178,13 +183,13 @@ JAZZMIN_SETTINGS = {
     "site_logo": "logo.png",  # 放在 static 目录下
     
     # 登录页Logo
-    "login_logo": None,
+    "login_logo": "logo.png",
     
     # Logo 类
     "site_logo_classes": "img-circle",
     
     # 网站图标
-    "site_icon": None,
+    "site_icon": "logo.png",
     
     # 欢迎标语
     "welcome_sign": "欢迎使用 ICAO4 航空英语考试系统",
@@ -237,35 +242,76 @@ JAZZMIN_SETTINGS = {
     
     # 应用的图标（使用 Font Awesome 5）
     "icons": {
+        # 认证相关
         "auth": "fas fa-users-cog",
         "auth.user": "fas fa-user",
         "auth.Group": "fas fa-users",
+        
+        # 账户相关
+        "account": "fas fa-user-circle",
         "account.WxUser": "fab fa-weixin",
         "account.Role": "fas fa-user-tag",
+        "account.UserLearningProgress": "fas fa-chart-line",
+        
+        # 考试模块
+        "exam": "fas fa-graduation-cap",
         "exam.ExamPaper": "fas fa-file-alt",
         "exam.ExamModule": "fas fa-puzzle-piece",
-        "mcq.McqQuestion": "fas fa-headphones",
+        
+        # MCQ听力选择题
+        "mcq": "fas fa-headphones",
+        "mcq.McqMaterial": "fas fa-file-audio",
+        "mcq.McqQuestion": "fas fa-question-circle",
         "mcq.McqChoice": "fas fa-list-ul",
         "mcq.McqResponse": "fas fa-check-circle",
+        
+        # LSA听力与理解
+        "lsa": "fas fa-ear-listen",
         "lsa.LsaDialog": "fas fa-comment-dots",
         "lsa.LsaQuestion": "fas fa-question-circle",
         "lsa.LsaResponse": "fas fa-microphone",
+        
+        # 故事复述
+        "story": "fas fa-book",
         "story.RetellItem": "fas fa-book-reader",
         "story.RetellResponse": "fas fa-comment",
+        
+        # OPI口语面试
+        "opi": "fas fa-user-tie",
         "opi.OpiTopic": "fas fa-comments",
         "opi.OpiQuestion": "fas fa-question",
         "opi.OpiResponse": "fas fa-reply",
+        
+        # ATC空中交通管制
+        "atc": "fas fa-broadcast-tower",
         "atc.Airport": "fas fa-plane-departure",
-        "atc.AtcScenario": "fas fa-tower-broadcast",
+        "atc.AtcScenario": "fas fa-reply-all",
         "atc.AtcTurn": "fas fa-exchange-alt",
         "atc.AtcTurnResponse": "fas fa-reply-all",
+        
+        # 术语
+        "term": "fas fa-book-open",
         "term.AvTermsTopic": "fas fa-tags",
         "term.AvTerm": "fas fa-language",
+        
+        # 词汇
+        "vocab": "fas fa-spell-check",
         "vocab.AvVocabTopic": "fas fa-folder-open",
-        "vocab.AvVocab": "fas fa-spell-check",
+        "vocab.AvVocab": "fas fa-font",
+        "vocab.UserVocabLearning": "fas fa-user-graduate",
+        "vocab.UserTermLearning": "fas fa-user-graduate",
+        
+        # 轮播图
+        "banner": "fas fa-image",
         "banner.Banner": "fas fa-images",
         "banner.BannerItem": "fas fa-photo-video",
+        
+        # 媒体资源
+        "media": "fas fa-photo-video",
         "media.MediaAsset": "fas fa-file-audio",
+        
+        # 公共模块
+        "common": "fas fa-cogs",
     },
     
     # 默认图标（对于没有指定图标的）
@@ -411,6 +457,223 @@ WECHAT_MINI_PROGRAM = {
     'APP_ID': 'wxbd524017c02e9770',  # 请替换为你的微信小程序AppID
     'APP_SECRET': 'f62bffe2497f8002513dfe5235f25e20',  # 请替换为你的微信小程序AppSecret
     'LOGIN_URL': 'https://api.weixin.qq.com/sns/jscode2session',
+}
+
+# ==================== 日志配置 ====================
+import os
+
+# 日志文件目录
+LOGS_DIR = os.path.join(BASE_DIR, 'logs')
+if not os.path.exists(LOGS_DIR):
+    os.makedirs(LOGS_DIR)
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    
+    # 格式化器
+    'formatters': {
+        'verbose': {
+            'format': '[{levelname}] {asctime} {module} {process:d} {thread:d} - {message}',
+            'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
+        'simple': {
+            'format': '[{levelname}] {asctime} - {message}',
+            'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
+        'detailed': {
+            'format': '[{levelname}] {asctime} [{name}:{lineno}] {funcName} - {message}',
+            'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
+    },
+    
+    # 过滤器
+    'filters': {
+        'require_debug_true': {
+            '()': 'django.utils.log.RequireDebugTrue',
+        },
+        'require_debug_false': {
+            '()': 'django.utils.log.RequireDebugFalse',
+        },
+    },
+    
+    # 处理器
+    'handlers': {
+        # 控制台输出
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+        
+        # 所有日志（按天切割）
+        'file_all': {
+            'level': 'DEBUG',
+            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'filename': os.path.join(LOGS_DIR, 'all.log'),
+            'when': 'midnight',  # 每天午夜切割
+            'interval': 1,
+            'backupCount': 30,  # 保留30天
+            'formatter': 'detailed',
+            'encoding': 'utf-8',
+        },
+        
+        # 错误日志（按天切割）
+        'file_error': {
+            'level': 'ERROR',
+            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'filename': os.path.join(LOGS_DIR, 'error.log'),
+            'when': 'midnight',
+            'interval': 1,
+            'backupCount': 60,  # 保留60天
+            'formatter': 'detailed',
+            'encoding': 'utf-8',
+        },
+        
+        # 警告日志（按天切割）
+        'file_warning': {
+            'level': 'WARNING',
+            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'filename': os.path.join(LOGS_DIR, 'warning.log'),
+            'when': 'midnight',
+            'interval': 1,
+            'backupCount': 30,
+            'formatter': 'detailed',
+            'encoding': 'utf-8',
+        },
+        
+        # Django请求日志（按天切割）
+        'file_django': {
+            'level': 'INFO',
+            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'filename': os.path.join(LOGS_DIR, 'django.log'),
+            'when': 'midnight',
+            'interval': 1,
+            'backupCount': 15,
+            'formatter': 'verbose',
+            'encoding': 'utf-8',
+        },
+        
+        # 数据库查询日志（按天切割，按大小限制）
+        'file_db': {
+            'level': 'DEBUG',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': os.path.join(LOGS_DIR, 'db.log'),
+            'maxBytes': 10 * 1024 * 1024,  # 10MB
+            'backupCount': 5,
+            'formatter': 'detailed',
+            'encoding': 'utf-8',
+        },
+        
+        # 业务日志（按天切割）
+        'file_business': {
+            'level': 'INFO',
+            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'filename': os.path.join(LOGS_DIR, 'business.log'),
+            'when': 'midnight',
+            'interval': 1,
+            'backupCount': 30,
+            'formatter': 'detailed',
+            'encoding': 'utf-8',
+        },
+    },
+    
+    # 日志记录器
+    'loggers': {
+        # Django核心日志
+        'django': {
+            'handlers': ['console', 'file_django', 'file_all'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        
+        # Django请求日志
+        'django.request': {
+            'handlers': ['console', 'file_error', 'file_all'],
+            'level': 'ERROR',
+            'propagate': False,
+        },
+        
+        # Django服务器日志
+        'django.server': {
+            'handlers': ['console', 'file_django'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        
+        # 数据库查询日志（开发时启用）
+        'django.db.backends': {
+            'handlers': ['file_db'],
+            'level': 'DEBUG' if DEBUG else 'INFO',
+            'propagate': False,
+        },
+        
+        # 应用日志 - account
+        'account': {
+            'handlers': ['console', 'file_business', 'file_all'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        
+        # 应用日志 - media
+        'media': {
+            'handlers': ['console', 'file_business', 'file_all'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        
+        # 应用日志 - mcq
+        'mcq': {
+            'handlers': ['console', 'file_business', 'file_all'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        
+        # 应用日志 - vocab
+        'vocab': {
+            'handlers': ['console', 'file_business', 'file_all'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        
+        # 应用日志 - term
+        'term': {
+            'handlers': ['console', 'file_business', 'file_all'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        
+        # 其他应用日志
+        'lsa': {
+            'handlers': ['console', 'file_business', 'file_all'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'story': {
+            'handlers': ['console', 'file_business', 'file_all'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'opi': {
+            'handlers': ['console', 'file_business', 'file_all'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'atc': {
+            'handlers': ['console', 'file_business', 'file_all'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        
+        # 根日志记录器
+        '': {
+            'handlers': ['console', 'file_all'],
+            'level': 'INFO',
+        },
+    },
 }
 
 

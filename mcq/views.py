@@ -4,16 +4,20 @@ MCQ (听力选择题) 视图
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.pagination import PageNumberPagination
-from django.db.models import Q
+from django.db.models import Q, Count, Exists, OuterRef
+from exam.models import ExamModule
+import random
 
 from common.response import ApiResponse
 from common.mixins import ResponseMixin
-from .models import McqQuestion, McqChoice, McqResponse
+from .models import McqMaterial, McqQuestion, McqChoice, McqResponse
 from .serializers import (
     McqQuestionSerializer,
     McqQuestionDetailSerializer,
     McqChoiceSerializer,
-    McqResponseSerializer
+    McqResponseSerializer,
+    McqMaterialWithQuestionsSerializer,
+    McqResponseCreateSerializer
 )
 
 
@@ -26,162 +30,476 @@ class McqPagination(PageNumberPagination):
 
 # ==================== McqQuestion 视图 ====================
 
-class McqQuestionListView(APIView, ResponseMixin):
+class McqQuestionsView(APIView, ResponseMixin):
     """
-    听力选择题列表视图（分页查询）
+    获取MCQ题目
     
-    GET /api/mcq/question/list/
-    """
-    permission_classes = [AllowAny]
+    支持两种模式：
+    1. 按模块获取：GET /api/mcq/questions?id=1
+    2. 随机模块：GET /api/mcq/questions?mode=random
     
-    def get(self, request):
-        search = request.query_params.get('search')
-        
-        queryset = McqQuestion.objects.all()
-        
-        if search:
-            queryset = queryset.filter(text_stem__icontains=search)
-        
-        queryset = queryset.order_by('-created_at')
-        
-        paginator = McqPagination()
-        page = paginator.paginate_queryset(queryset, request)
-        
-        if page is not None:
-            serializer = McqQuestionSerializer(page, many=True)
-            result = paginator.get_paginated_response(serializer.data)
-            return self.success_response(data=result.data, message='查询成功')
-        
-        serializer = McqQuestionSerializer(queryset, many=True)
-        return self.success_response(data=serializer.data, message='查询成功')
-
-
-class McqQuestionDetailView(APIView, ResponseMixin):
-    """
-    听力选择题详情视图（包含所有选项）
+    返回格式：
+    {
+        "module": {
+            "id": 1,
+            "title": "Part 1 - 听力理解",
+            "question_count": 15
+        },
+        "materials": [
+            {
+                "id": 1,
+                "title": "材料标题",
+                "audio_url": "...",
+                "questions": [...]
+            }
+        ]
+    }
     
-    GET /api/mcq/question/detail/<id>/
-    """
-    permission_classes = [AllowAny]
-    
-    def get(self, request, pk):
-        try:
-            question = McqQuestion.objects.prefetch_related('choices').get(pk=pk)
-            serializer = McqQuestionDetailSerializer(question)
-            return self.success_response(data=serializer.data, message='查询成功')
-        except McqQuestion.DoesNotExist:
-            return self.not_found_response(message='题目不存在')
-
-
-class McqQuestionChoicesView(APIView, ResponseMixin):
-    """
-    获取题目的所有选项
-    
-    GET /api/mcq/question/<question_id>/choices/
-    """
-    permission_classes = [AllowAny]
-    
-    def get(self, request, question_id):
-        try:
-            question = McqQuestion.objects.get(pk=question_id)
-        except McqQuestion.DoesNotExist:
-            return self.not_found_response(message='题目不存在')
-        
-        choices = question.choices.all().order_by('label')
-        serializer = McqChoiceSerializer(choices, many=True)
-        return self.success_response(data=serializer.data, message='查询成功')
-
-
-# ==================== McqChoice 视图 ====================
-
-class McqChoiceListView(APIView, ResponseMixin):
-    """
-    选择题选项列表视图
-    
-    GET /api/mcq/choice/list/
+    参数：
+    - id: ExamModule的ID（指定模块）
+    - mode: random（随机选择一个模块）
+    - 如果两个参数都不提供，返回所有启用的材料（旧版兼容）
     """
     permission_classes = [AllowAny]
     
     def get(self, request):
-        question = request.query_params.get('question')
+        module_id = request.query_params.get('id')
+        mode = request.query_params.get('mode')
         
-        queryset = McqChoice.objects.select_related('question').all()
+        # 新逻辑：按模块获取或随机模块
+        if module_id or mode == 'random':
+            return self._get_module_questions(request, module_id, mode)
         
-        if question:
-            queryset = queryset.filter(question_id=question)
-        
-        queryset = queryset.order_by('question', 'label')
-        
-        paginator = McqPagination()
-        page = paginator.paginate_queryset(queryset, request)
-        
-        if page is not None:
-            serializer = McqChoiceSerializer(page, many=True)
-            result = paginator.get_paginated_response(serializer.data)
-            return self.success_response(data=result.data, message='查询成功')
-        
-        serializer = McqChoiceSerializer(queryset, many=True)
-        return self.success_response(data=serializer.data, message='查询成功')
-
-
-# ==================== McqResponse 视图 ====================
-
-class McqResponseListView(APIView, ResponseMixin):
-    """
-    选择题作答记录列表视图
+        # 旧逻辑：兼容原来的接口（获取所有材料）
+        return self._get_all_materials(request)
     
-    GET /api/mcq/response/list/
+    def _get_module_questions(self, request, module_id=None, mode=None):
+        """获取指定模块或随机模块的所有材料和题目"""
+        
+        # 获取模块
+        if module_id:
+            # 按ID获取指定模块
+            try:
+                module = ExamModule.objects.get(
+                    id=module_id,
+                    module_type='LISTENING_MCQ',
+                    is_activate=True
+                )
+            except ExamModule.DoesNotExist:
+                return self.error_response(message='模块不存在或未启用')
+        elif mode == 'random':
+            # 随机选择一个模块
+            modules = ExamModule.objects.filter(
+                module_type='LISTENING_MCQ',
+                is_activate=True
+            )
+            
+            if not modules.exists():
+                return self.error_response(message='没有可用的听力理解模块')
+            
+            # 随机选择
+            module = random.choice(list(modules))
+        else:
+            return self.error_response(message='请提供id参数或设置mode=random')
+        
+        # 获取模块的所有题目
+        questions = module.module_mcq.all().prefetch_related('choices', 'material')
+        
+        # 按材料分组题目
+        material_dict = {}
+        independent_questions = []
+        
+        for question in questions:
+            if question.material:
+                material_id = question.material.id
+                if material_id not in material_dict:
+                    material_dict[material_id] = {
+                        'material': question.material,
+                        'questions': []
+                    }
+                material_dict[material_id]['questions'].append(question)
+            else:
+                independent_questions.append(question)
+        
+        # 序列化材料和题目
+        materials_data = []
+        for material_id, data in material_dict.items():
+            material = data['material']
+            material_questions = data['questions']
+            
+            # 序列化题目
+            questions_serializer = McqQuestionDetailSerializer(
+                material_questions,
+                many=True,
+                context={'request': request}
+            )
+            
+            materials_data.append({
+                'id': material.id,
+                'title': material.title,
+                'description': material.description,
+                'audio_url': material.audio_asset.get_file_url() if material.audio_asset else None,
+                'difficulty': material.difficulty,
+                'display_order': material.display_order,
+                'question_count': len(material_questions),
+                'questions': questions_serializer.data
+            })
+        
+        # 按显示顺序排序
+        materials_data.sort(key=lambda x: x['display_order'])
+        
+        # 序列化独立题目
+        independent_serializer = McqQuestionDetailSerializer(
+            independent_questions,
+            many=True,
+            context={'request': request}
+        )
+        
+        # 统计总题目数
+        total_questions = sum(m['question_count'] for m in materials_data) + len(independent_questions)
+        
+        return self.success_response(
+            data={
+                'module': {
+                    'id': module.id,
+                    'title': module.title or f'模块 {module.id}',
+                    'display_order': module.display_order,
+                    'duration': module.duration,
+                    'score': module.score,
+                    'question_count': total_questions
+                },
+                'materials_count': len(materials_data),
+                'total_questions': total_questions,
+                'materials': materials_data,
+                'independent_questions': independent_serializer.data
+            },
+            message='查询成功'
+        )
+    
+    def _get_all_materials(self, request):
+        """旧版接口：获取所有启用的材料（兼容性保留）"""
+        mode = request.query_params.get('mode', 'sequential')
+        count = request.query_params.get('count')
+        difficulty = request.query_params.get('difficulty')
+
+        # 获取所有启用的材料
+        materials_queryset = McqMaterial.objects.filter(is_enabled=True).prefetch_related(
+            'questions',
+            'questions__choices'
+        )
+        
+        # 难度筛选
+        if difficulty:
+            materials_queryset = materials_queryset.filter(difficulty=difficulty)
+        
+        # 根据模式排序或随机
+        if mode == 'sequential':
+            materials_queryset = materials_queryset.order_by('display_order', 'created_at')
+        else:
+            # 随机模式：转为列表并打乱
+            materials_list = list(materials_queryset)
+            random.shuffle(materials_list)
+            materials_queryset = materials_list
+        
+        # 限制数量
+        if count:
+            count = int(count)
+            materials_queryset = materials_queryset[:count] if hasattr(materials_queryset, '__getitem__') else list(materials_queryset)[:count]
+        
+        # 序列化材料（包含问题）
+        materials_serializer = McqMaterialWithQuestionsSerializer(
+            materials_queryset,
+            many=True,
+            context={'request': request}
+        )
+        
+        # 获取独立题目（没有关联材料的）
+        independent_questions = McqQuestion.objects.filter(
+            material__isnull=True
+        ).prefetch_related('choices')
+        
+        if mode == 'random':
+            independent_list = list(independent_questions)
+            random.shuffle(independent_list)
+            independent_questions = independent_list
+        
+        # 序列化独立题目
+        independent_serializer = McqQuestionDetailSerializer(
+            independent_questions,
+            many=True,
+            context={'request': request}
+        )
+        
+        # 统计总题目数
+        total_questions = sum(m['question_count'] for m in materials_serializer.data) + len(independent_serializer.data)
+        
+        return self.success_response(
+            data={
+                'mode': mode,
+                'materials_count': len(materials_serializer.data),
+                'total_questions': total_questions,
+                'materials': materials_serializer.data,
+                'independent_questions': independent_serializer.data
+            },
+            message='查询成功'
+        )
+
+
+class McqQuestionsAllView(APIView, ResponseMixin):
+    """
+    获取所有听力理解模块及用户答题情况
+    
+    GET /api/mcq/questions/all/
+    
+    返回格式：
+    {
+        "modules": [
+            {
+                "id": 1,
+                "title": "Part 1 - 听力理解",
+                "question_count": 15,
+                "answered_count": 5,
+                "correct_count": 4,
+                "progress": 33.3,
+                "accuracy": 80.0
+            }
+        ],
+        "total_modules": 3,
+        "total_questions": 45,
+        "total_answered": 20,
+        "total_correct": 15,
+        "overall_progress": 44.4,
+        "overall_accuracy": 75.0
+    }
+    """
+    permission_classes = [AllowAny]
+    
+    def get(self, request):
+        user = request.user
+        
+        # 获取所有听力理解类型的模块
+        mcq_modules = ExamModule.objects.filter(
+            module_type='LISTENING_MCQ',
+            is_activate=True
+        ).prefetch_related('module_mcq')
+        
+        modules_data = []
+        total_questions = 0
+        total_answered = 0
+        total_correct = 0
+        
+        # 检查用户是否已登录
+        is_authenticated = user.is_authenticated
+        
+        for module in mcq_modules:
+            # 获取该模块的所有题目
+            questions = module.module_mcq.all()
+            question_count = questions.count()
+            
+            if question_count == 0:
+                continue
+            
+            # 只有登录用户才查询答题记录
+            answered_count = 0
+            correct_count = 0
+            
+            if is_authenticated:
+                # 获取用户在这些题目上的答题记录
+                question_ids = questions.values_list('id', flat=True)
+                responses = McqResponse.objects.filter(
+                    user=user,
+                    question_id__in=question_ids
+                )
+                
+                answered_count = responses.count()
+                correct_count = responses.filter(is_correct=True).count()
+            
+            # 计算进度和正确率
+            progress = round((answered_count / question_count * 100), 1) if question_count > 0 else 0
+            accuracy = round((correct_count / answered_count * 100), 1) if answered_count > 0 else 0
+            
+            modules_data.append({
+                'id': module.id,
+                'title': module.title or f'模块 {module.id}',
+                'display_order': module.display_order or 0,
+                'question_count': question_count,
+                'answered_count': answered_count,
+                'correct_count': correct_count,
+                'progress': progress,
+                'accuracy': accuracy,
+                'duration': module.duration,
+                'score': module.score
+            })
+            
+            total_questions += question_count
+            total_answered += answered_count
+            total_correct += correct_count
+        
+        # 按显示顺序排序
+        modules_data.sort(key=lambda x: x['display_order'])
+        
+        # 计算总体统计
+        overall_progress = round((total_answered / total_questions * 100), 1) if total_questions > 0 else 0
+        overall_accuracy = round((total_correct / total_answered * 100), 1) if total_answered > 0 else 0
+        
+        return self.success_response(
+            data={
+                'is_authenticated': is_authenticated,
+                'modules': modules_data,
+                'total_modules': len(modules_data),
+                'total_questions': total_questions,
+                'total_answered': total_answered,
+                'total_correct': total_correct,
+                'overall_progress': overall_progress,
+                'overall_accuracy': overall_accuracy
+            },
+            message='查询成功' if is_authenticated else '查询成功（未登录用户无答题记录）'
+        )
+
+
+class McqSubmitAnswerView(APIView, ResponseMixin):
+    """
+    提交MCQ答题
+    
+    POST /api/mcq/submit-answer/
+    
+    请求体：
+    {
+        "question_id": 1,
+        "selected_choice_id": 2,
+        "mode_type": "practice",  // practice 或 exam
+        "is_timeout": false
+    }
+    
+    返回：
+    {
+        "is_correct": true,
+        "correct_choice": "A",
+        "selected_choice": "A",
+        "explanation": "..."
+    }
     """
     permission_classes = [IsAuthenticated]
     
-    def get(self, request):
-        user = request.query_params.get('user')
-        question = request.query_params.get('question')
-        is_correct = request.query_params.get('is_correct')
-        is_timeout = request.query_params.get('is_timeout')
+    def post(self, request):
+        user = request.user
+        question_id = request.data.get('question_id')
+        selected_choice_id = request.data.get('selected_choice_id')
+        mode_type = request.data.get('mode_type', 'practice')
+        is_timeout = request.data.get('is_timeout', False)
         
-        queryset = McqResponse.objects.select_related('question', 'user', 'selected_choice').all()
+        # 验证参数
+        if not question_id:
+            return self.error_response(message='缺少参数: question_id')
         
-        if user:
-            queryset = queryset.filter(user_id=user)
+        try:
+            question = McqQuestion.objects.get(id=question_id)
+        except McqQuestion.DoesNotExist:
+            return self.error_response(message='题目不存在')
         
-        if question:
-            queryset = queryset.filter(question_id=question)
+        # 获取选中的选项和正确答案
+        selected_choice = None
+        is_correct = False
         
-        if is_correct is not None:
-            is_correct_bool = is_correct.lower() == 'true'
-            queryset = queryset.filter(is_correct=is_correct_bool)
+        if selected_choice_id:
+            try:
+                selected_choice = McqChoice.objects.get(
+                    id=selected_choice_id,
+                    question=question
+                )
+                is_correct = selected_choice.is_correct
+            except McqChoice.DoesNotExist:
+                return self.error_response(message='选项不存在或不属于该题目')
         
-        if is_timeout is not None:
-            is_timeout_bool = is_timeout.lower() == 'true'
-            queryset = queryset.filter(is_timeout=is_timeout_bool)
+        # 创建答题记录
+        response = McqResponse.objects.create(
+            user=user,
+            question=question,
+            selected_choice=selected_choice,
+            is_correct=is_correct,
+            mode_type=mode_type,
+            is_timeout=is_timeout
+        )
         
-        queryset = queryset.order_by('-created_at')
+        # 获取正确答案
+        correct_choice = question.choices.filter(is_correct=True).first()
         
-        paginator = McqPagination()
-        page = paginator.paginate_queryset(queryset, request)
-        
-        if page is not None:
-            serializer = McqResponseSerializer(page, many=True)
-            result = paginator.get_paginated_response(serializer.data)
-            return self.success_response(data=result.data, message='查询成功')
-        
-        serializer = McqResponseSerializer(queryset, many=True)
-        return self.success_response(data=serializer.data, message='查询成功')
+        return self.success_response(
+            data={
+                'response_id': response.id,
+                'is_correct': is_correct,
+                'correct_choice': correct_choice.label if correct_choice else None,
+                'selected_choice': selected_choice.label if selected_choice else None,
+                'is_timeout': is_timeout
+            },
+            message='答题记录已保存'
+        )
 
 
-class McqResponseDetailView(APIView, ResponseMixin):
+class McqUserProgressView(APIView, ResponseMixin):
     """
-    作答记录详情视图
+    获取用户在指定模块的答题进度
     
-    GET /api/mcq/response/detail/<id>/
+    GET /api/mcq/progress/{module_id}/
+    
+    返回：
+    {
+        "module": {...},
+        "questions": [
+            {
+                "id": 1,
+                "text_stem": "...",
+                "is_answered": true,
+                "is_correct": true,
+                "last_answered_at": "..."
+            }
+        ]
+    }
     """
     permission_classes = [IsAuthenticated]
     
-    def get(self, request, pk):
+    def get(self, request, module_id):
+        user = request.user
+        
         try:
-            response = McqResponse.objects.select_related('question', 'user', 'selected_choice').get(pk=pk)
-            serializer = McqResponseSerializer(response)
-            return self.success_response(data=serializer.data, message='查询成功')
-        except McqResponse.DoesNotExist:
-            return self.not_found_response(message='作答记录不存在')
+            module = ExamModule.objects.get(
+                id=module_id,
+                module_type='LISTENING_MCQ',
+                is_activate=True
+            )
+        except ExamModule.DoesNotExist:
+            return self.error_response(message='模块不存在')
+        
+        # 获取模块的所有题目
+        questions = module.module_mcq.all().prefetch_related('choices')
+        
+        questions_data = []
+        for question in questions:
+            # 获取用户最近的答题记录
+            latest_response = McqResponse.objects.filter(
+                user=user,
+                question=question
+            ).order_by('-answered_at').first()
+            
+            questions_data.append({
+                'id': question.id,
+                'text_stem': question.text_stem,
+                'is_answered': latest_response is not None,
+                'is_correct': latest_response.is_correct if latest_response else None,
+                'last_answered_at': latest_response.answered_at if latest_response else None,
+                'attempt_count': McqResponse.objects.filter(user=user, question=question).count()
+            })
+        
+        return self.success_response(
+            data={
+                'module': {
+                    'id': module.id,
+                    'title': module.title,
+                    'question_count': questions.count()
+                },
+                'questions': questions_data
+            },
+            message='查询成功'
+        )
+
+

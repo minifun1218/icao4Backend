@@ -2,18 +2,159 @@
 MCQ (听力选择题) Admin 配置
 """
 from django.contrib import admin
-from .models import McqQuestion, McqChoice, McqResponse
+from django.utils.html import format_html
+from django.utils.safestring import mark_safe
+from .models import McqMaterial, McqQuestion, McqChoice, McqResponse
 
 
 class McqChoiceInline(admin.TabularInline):
     """
-    选择题选项内联编辑
+    选择题选项内联编辑（自动生成A、B、C、D标签）
     """
     model = McqChoice
-    extra = 4
+    extra = 4  # 默认显示4个额外的空白表单（A、B、C、D）
     max_num = 4
     fields = ['label', 'content', 'is_correct']
     ordering = ['label']
+    
+    def get_formset(self, request, obj=None, **kwargs):
+        """自定义formset，为新选项设置默认label"""
+        # 先调用父类方法获取formset类
+        FormSet = super().get_formset(request, obj, **kwargs)
+        
+        # 保存obj引用和已有labels
+        question_obj = obj
+        existing_labels = set()
+        if question_obj:
+            existing_labels = set(question_obj.choices.values_list('label', flat=True))
+        
+        # 自定义formset类
+        class CustomFormSet(FormSet):
+            def __init__(self, *args, **kwargs):
+                # 必须先调用父类初始化
+                super().__init__(*args, **kwargs)
+                
+                # 所有可用的label
+                all_labels = ['A', 'B', 'C', 'D']
+                # 已使用的label（从外部作用域获取）
+                used = set(existing_labels)
+                
+                # 为新的空白表单分配label
+                for form in self.forms:
+                    # 检查是否是新表单（没有pk）
+                    if not form.instance.pk:
+                        # 如果label字段为空
+                        if not form.instance.label and 'label' not in form.initial:
+                            # 找到第一个未使用的label
+                            for label in all_labels:
+                                if label not in used:
+                                    form.initial['label'] = label
+                                    used.add(label)
+                                    break
+        
+        return CustomFormSet
+
+
+@admin.register(McqMaterial)
+class McqMaterialAdmin(admin.ModelAdmin):
+    """
+    MCQ听力材料后台管理
+    """
+    list_display = [
+        'id',
+        'title',
+        'audio_preview',
+        'difficulty',
+        'question_count_display',
+        'is_enabled',
+        'display_order',
+        'created_at'
+    ]
+    list_filter = ['difficulty', 'is_enabled', 'created_at']
+    search_fields = ['title', 'description', 'content']
+    ordering = ['display_order', '-created_at']
+    
+    fieldsets = (
+        ('基本信息', {
+            'fields': ('title', 'description', 'difficulty', 'display_order', 'is_enabled'),
+            'description': '💡 提示：标题可留空，系统将自动使用音频文件名作为标题'
+        }),
+        ('音频资源', {
+            'fields': ('audio_asset', 'audio_player_display')
+        }),
+        ('材料内容', {
+            'fields': ('content',),
+            'classes': ('collapse',),
+            'description': '听力材料的文字稿（可选）'
+        }),
+        ('时间信息', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    readonly_fields = ['created_at', 'updated_at', 'audio_player_display']
+    
+    def audio_preview(self, obj):
+        """列表页音频预览（可播放）"""
+        if obj.audio_asset:
+            audio_url = obj.audio_asset.get_file_url()
+            return mark_safe(f'''
+                <div style="display: flex; align-items: center; gap: 5px;">
+                    <i class="fas fa-file-audio" style="font-size: 20px; color: #17a2b8;"></i>
+                    <audio controls style="height: 30px; width: 180px;" preload="none">
+                        <source src="{audio_url}" type="audio/mpeg">
+                    </audio>
+                </div>
+            ''')
+        return '-'
+    audio_preview.short_description = '音频播放'
+    
+    def audio_player_display(self, obj):
+        """详情页音频播放器"""
+        if obj.audio_asset:
+            audio_url = obj.audio_asset.get_file_url()
+            duration_display = ''
+            if obj.audio_asset.duration_ms:
+                seconds = obj.audio_asset.duration_ms / 1000
+                if seconds < 60:
+                    duration_display = f'{seconds:.1f}秒'
+                else:
+                    minutes = seconds / 60
+                    duration_display = f'{minutes:.1f}分钟'
+            
+            return mark_safe(f'''
+                <div style="padding: 15px; background: #f0f8ff; border-left: 4px solid #17a2b8; border-radius: 4px;">
+                    <div style="margin-bottom: 10px;">
+                        <i class="fas fa-volume-up" style="color: #17a2b8; font-size: 24px;"></i>
+                        <strong style="margin-left: 10px; font-size: 16px;">听力材料音频</strong>
+                    </div>
+                    <audio controls style="width: 100%; margin: 10px 0;">
+                        <source src="{audio_url}" type="audio/mpeg">
+                        您的浏览器不支持音频播放。
+                    </audio>
+                    <div style="color: #666; font-size: 12px; margin-top: 5px;">
+                        {f'<i class="fas fa-clock"></i> 时长: {duration_display}' if duration_display else ''}
+                        <br>
+                        <a href="{audio_url}" target="_blank" download style="color: #17a2b8;">
+                            <i class="fas fa-download"></i> 下载音频
+                        </a>
+                    </div>
+                </div>
+            ''')
+        return mark_safe('<p style="color: #999;">未上传音频</p>')
+    audio_player_display.short_description = '音频播放器'
+    
+    def question_count_display(self, obj):
+        """显示问题数量"""
+        count = obj.questions.count()
+        if count > 0:
+            return format_html(
+                '<a href="/admin/mcq/mcqquestion/?material__id__exact={}" style="color: #17a2b8;">{} 个问题</a>',
+                obj.id, count
+            )
+        return '0 个问题'
+    question_count_display.short_description = '关联问题'
 
 
 @admin.register(McqQuestion)
@@ -23,24 +164,33 @@ class McqQuestionAdmin(admin.ModelAdmin):
     """
     list_display = [
         'id',
+        'material',
         'text_stem_short',
-        'audio_asset',
+        'audio_preview',
         'choice_count',
+        'correct_answer',
+        'module_display',
         'created_at'
     ]
-    list_filter = ['created_at']
-    search_fields = ['text_stem']
+    list_filter = ['material', 'created_at', 'exam_module']
+    search_fields = ['text_stem', 'material__title']
     ordering = ['-created_at']
     
     fieldsets = (
-        ('基本信息', {
+        ('关联信息', {
+            'fields': ('material',),
+            'description': '如果题目属于某个听力材料，请选择对应的材料'
+        }),
+        ('题目信息', {
             'fields': ('text_stem',)
         }),
         ('音频资源', {
-            'fields': ('audio_asset',)
+            'fields': ('audio_asset', 'audio_player_display'),
+            'description': '如果已关联材料，可留空使用材料音频；也可单独上传题目音频'
         }),
         ('关联模块', {
-            'fields': ('exam_module',)
+            'fields': ('exam_module',),
+            'description': '💡 选择该题目所属的试题模块（可多选）'
         }),
         ('时间信息', {
             'fields': ('created_at',),
@@ -48,11 +198,19 @@ class McqQuestionAdmin(admin.ModelAdmin):
         }),
     )
     
-    readonly_fields = ['created_at']
+    readonly_fields = ['created_at', 'audio_player_display']
     
     filter_horizontal = ['exam_module']
     
     inlines = [McqChoiceInline]
+    
+    def module_display(self, obj):
+        """显示关联的模块"""
+        modules = obj.exam_module.all()
+        if modules:
+            return ', '.join([f'{m.title}' for m in modules[:3]])
+        return '-'
+    module_display.short_description = '关联模块'
     
     def text_stem_short(self, obj):
         """显示题干缩略"""
@@ -61,10 +219,91 @@ class McqQuestionAdmin(admin.ModelAdmin):
         return '-'
     text_stem_short.short_description = '题干'
     
+    def audio_preview(self, obj):
+        """列表页音频预览（可播放）"""
+        audio = obj.get_audio()
+        if audio:
+            audio_url = audio.get_file_url()
+            source = '材料' if (obj.material and obj.material.audio_asset) else '题目'
+            return mark_safe(f'''
+                <div style="display: flex; align-items: center; gap: 5px;">
+                    <i class="fas fa-file-audio" style="font-size: 16px; color: #17a2b8;" title="{source}音频"></i>
+                    <audio controls style="height: 28px; width: 160px;" preload="none">
+                        <source src="{audio_url}" type="audio/mpeg">
+                    </audio>
+                </div>
+            ''')
+        return mark_safe('<span style="color: #999;">无音频</span>')
+    audio_preview.short_description = '音频播放'
+    
+    def audio_player_display(self, obj):
+        """详情页音频播放器（显示来源）"""
+        audio = obj.get_audio()
+        if audio:
+            audio_url = audio.get_file_url()
+            is_from_material = obj.material and obj.material.audio_asset
+            source_text = '来源：关联材料' if is_from_material else '来源：题目独立音频'
+            source_color = '#28a745' if is_from_material else '#17a2b8'
+            
+            duration_display = ''
+            if audio.duration_ms:
+                seconds = audio.duration_ms / 1000
+                if seconds < 60:
+                    duration_display = f'{seconds:.1f}秒'
+                else:
+                    minutes = seconds / 60
+                    duration_display = f'{minutes:.1f}分钟'
+            
+            return mark_safe(f'''
+                <div style="padding: 15px; background: #f0f8ff; border-left: 4px solid {source_color}; border-radius: 4px;">
+                    <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <i class="fas fa-volume-up" style="color: {source_color}; font-size: 24px;"></i>
+                            <strong style="margin-left: 10px; font-size: 16px;">题目音频</strong>
+                        </div>
+                        <span style="color: {source_color}; font-size: 12px;">
+                            <i class="fas fa-info-circle"></i> {source_text}
+                        </span>
+                    </div>
+                    <audio controls style="width: 100%; margin: 10px 0;">
+                        <source src="{audio_url}" type="audio/mpeg">
+                        您的浏览器不支持音频播放。
+                    </audio>
+                    <div style="color: #666; font-size: 12px; margin-top: 5px;">
+                        {f'<i class="fas fa-clock"></i> 时长: {duration_display}' if duration_display else ''}
+                        {f'<span style="margin-left: 15px;"><i class="fas fa-link"></i> 材料: {obj.material.title}</span>' if is_from_material else ''}
+                        <br>
+                        <a href="{audio_url}" target="_blank" download style="color: {source_color};">
+                            <i class="fas fa-download"></i> 下载音频
+                        </a>
+                    </div>
+                </div>
+            ''')
+        return mark_safe('''
+            <div style="padding: 10px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
+                <i class="fas fa-exclamation-triangle" style="color: #856404;"></i>
+                <span style="color: #856404; margin-left: 5px;">
+                    未设置音频（请关联材料或上传独立音频）
+                </span>
+            </div>
+        ''')
+    audio_player_display.short_description = '音频播放器'
+    
     def choice_count(self, obj):
         """显示选项数量"""
         return obj.choices.count()
     choice_count.short_description = '选项数量'
+    
+    def correct_answer(self, obj):
+        """显示正确答案"""
+        correct_choice = obj.choices.filter(is_correct=True).first()
+        if correct_choice:
+            return format_html(
+                '<span style="color: green; font-weight: bold;">{}</span>',
+                correct_choice.label
+            )
+        return format_html('<span style="color: red;">未设置</span>')
+    correct_answer.short_description = '正确答案'
 
 
 @admin.register(McqChoice)
