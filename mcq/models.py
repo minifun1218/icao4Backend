@@ -260,9 +260,9 @@ class McqResponse(models.Model):
     ]
 
     # 模块本身 属于哪个模块的答题 (ManyToMany)
-    modules = models.ManyToManyField(
+    module = models.ManyToManyField(
         to='exam.ExamModule',
-        related_name='module_mcq',
+        related_name='module_mcq_response',
         db_column='module_id',
     )
 

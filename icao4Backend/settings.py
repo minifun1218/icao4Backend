@@ -460,219 +460,27 @@ WECHAT_MINI_PROGRAM = {
 }
 
 # ==================== 日志配置 ====================
-import os
-
-# 日志文件目录
-LOGS_DIR = os.path.join(BASE_DIR, 'logs')
-if not os.path.exists(LOGS_DIR):
-    os.makedirs(LOGS_DIR)
-
+# 简化配置：只输出到控制台
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
-    
-    # 格式化器
     'formatters': {
-        'verbose': {
-            'format': '[{levelname}] {asctime} {module} {process:d} {thread:d} - {message}',
-            'style': '{',
-            'datefmt': '%Y-%m-%d %H:%M:%S',
-        },
         'simple': {
             'format': '[{levelname}] {asctime} - {message}',
             'style': '{',
             'datefmt': '%Y-%m-%d %H:%M:%S',
         },
-        'detailed': {
-            'format': '[{levelname}] {asctime} [{name}:{lineno}] {funcName} - {message}',
-            'style': '{',
-            'datefmt': '%Y-%m-%d %H:%M:%S',
-        },
     },
-    
-    # 过滤器
-    'filters': {
-        'require_debug_true': {
-            '()': 'django.utils.log.RequireDebugTrue',
-        },
-        'require_debug_false': {
-            '()': 'django.utils.log.RequireDebugFalse',
-        },
-    },
-    
-    # 处理器
     'handlers': {
-        # 控制台输出
         'console': {
             'level': 'INFO',
             'class': 'logging.StreamHandler',
             'formatter': 'simple',
         },
-        
-        # 所有日志（按天切割）
-        'file_all': {
-            'level': 'DEBUG',
-            'class': 'logging.handlers.TimedRotatingFileHandler',
-            'filename': os.path.join(LOGS_DIR, 'all.log'),
-            'when': 'midnight',  # 每天午夜切割
-            'interval': 1,
-            'backupCount': 30,  # 保留30天
-            'formatter': 'detailed',
-            'encoding': 'utf-8',
-        },
-        
-        # 错误日志（按天切割）
-        'file_error': {
-            'level': 'ERROR',
-            'class': 'logging.handlers.TimedRotatingFileHandler',
-            'filename': os.path.join(LOGS_DIR, 'error.log'),
-            'when': 'midnight',
-            'interval': 1,
-            'backupCount': 60,  # 保留60天
-            'formatter': 'detailed',
-            'encoding': 'utf-8',
-        },
-        
-        # 警告日志（按天切割）
-        'file_warning': {
-            'level': 'WARNING',
-            'class': 'logging.handlers.TimedRotatingFileHandler',
-            'filename': os.path.join(LOGS_DIR, 'warning.log'),
-            'when': 'midnight',
-            'interval': 1,
-            'backupCount': 30,
-            'formatter': 'detailed',
-            'encoding': 'utf-8',
-        },
-        
-        # Django请求日志（按天切割）
-        'file_django': {
-            'level': 'INFO',
-            'class': 'logging.handlers.TimedRotatingFileHandler',
-            'filename': os.path.join(LOGS_DIR, 'django.log'),
-            'when': 'midnight',
-            'interval': 1,
-            'backupCount': 15,
-            'formatter': 'verbose',
-            'encoding': 'utf-8',
-        },
-        
-        # 数据库查询日志（按天切割，按大小限制）
-        'file_db': {
-            'level': 'DEBUG',
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': os.path.join(LOGS_DIR, 'db.log'),
-            'maxBytes': 10 * 1024 * 1024,  # 10MB
-            'backupCount': 5,
-            'formatter': 'detailed',
-            'encoding': 'utf-8',
-        },
-        
-        # 业务日志（按天切割）
-        'file_business': {
-            'level': 'INFO',
-            'class': 'logging.handlers.TimedRotatingFileHandler',
-            'filename': os.path.join(LOGS_DIR, 'business.log'),
-            'when': 'midnight',
-            'interval': 1,
-            'backupCount': 30,
-            'formatter': 'detailed',
-            'encoding': 'utf-8',
-        },
     },
-    
-    # 日志记录器
-    'loggers': {
-        # Django核心日志
-        'django': {
-            'handlers': ['console', 'file_django', 'file_all'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        
-        # Django请求日志
-        'django.request': {
-            'handlers': ['console', 'file_error', 'file_all'],
-            'level': 'ERROR',
-            'propagate': False,
-        },
-        
-        # Django服务器日志
-        'django.server': {
-            'handlers': ['console', 'file_django'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        
-        # 数据库查询日志（开发时启用）
-        'django.db.backends': {
-            'handlers': ['file_db'],
-            'level': 'DEBUG' if DEBUG else 'INFO',
-            'propagate': False,
-        },
-        
-        # 应用日志 - account
-        'account': {
-            'handlers': ['console', 'file_business', 'file_all'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        
-        # 应用日志 - media
-        'media': {
-            'handlers': ['console', 'file_business', 'file_all'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        
-        # 应用日志 - mcq
-        'mcq': {
-            'handlers': ['console', 'file_business', 'file_all'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        
-        # 应用日志 - vocab
-        'vocab': {
-            'handlers': ['console', 'file_business', 'file_all'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        
-        # 应用日志 - term
-        'term': {
-            'handlers': ['console', 'file_business', 'file_all'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        
-        # 其他应用日志
-        'lsa': {
-            'handlers': ['console', 'file_business', 'file_all'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        'story': {
-            'handlers': ['console', 'file_business', 'file_all'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        'opi': {
-            'handlers': ['console', 'file_business', 'file_all'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        'atc': {
-            'handlers': ['console', 'file_business', 'file_all'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        
-        # 根日志记录器
-        '': {
-            'handlers': ['console', 'file_all'],
-            'level': 'INFO',
-        },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
     },
 }
 

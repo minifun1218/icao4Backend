@@ -219,6 +219,13 @@ class AtcTurnResponse(models.Model):
         ('exam', '考试模式'),
     ]
 
+    # 模块本身 属于哪个模块的答题 (ManyToMany)
+    modules = models.ManyToManyField(
+        to='exam.ExamModule',
+        related_name='module_atc_response',
+        db_column='module_id',
+    )
+
     # 轮次ID（外键关联atc_turns表）
     atc_turn = models.ForeignKey(
         'AtcTurn',

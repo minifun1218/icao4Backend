@@ -54,27 +54,59 @@ Authorization: Bearer {token}
         "progress": 33.3,
         "accuracy": 80.0,
         "duration": 600000,
-        "score": 100
-      },
-      {
-        "id": 2,
-        "title": "Part 2 - 高级听力",
-        "display_order": 2,
-        "question_count": 20,
-        "answered_count": 10,
-        "correct_count": 7,
-        "progress": 50.0,
-        "accuracy": 70.0,
-        "duration": 900000,
-        "score": 150
+        "score": 100,
+        "materials": [
+          {
+            "id": 1,
+            "title": "机场天气广播",
+            "description": "关于机场天气的广播内容",
+            "audio_url": "http://example.com/media/audio/weather.mp3",
+            "difficulty": "medium",
+            "display_order": 1,
+            "question_count": 3,
+            "questions": [
+              {
+                "id": 1,
+                "text_stem": "根据广播，当前天气如何？",
+                "choices": [
+                  {
+                    "id": 1,
+                    "label": "A",
+                    "content": "晴朗",
+                    "is_correct": true
+                  },
+                  {
+                    "id": 2,
+                    "label": "B",
+                    "content": "多云",
+                    "is_correct": false
+                  },
+                  {
+                    "id": 3,
+                    "label": "C",
+                    "content": "下雨",
+                    "is_correct": false
+                  },
+                  {
+                    "id": 4,
+                    "label": "D",
+                    "content": "下雪",
+                    "is_correct": false
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "independent_questions": []
       }
     ],
-    "total_modules": 2,
-    "total_questions": 35,
-    "total_answered": 15,
-    "total_correct": 11,
-    "overall_progress": 42.9,
-    "overall_accuracy": 73.3
+    "total_modules": 1,
+    "total_questions": 15,
+    "total_answered": 5,
+    "total_correct": 4,
+    "overall_progress": 33.3,
+    "overall_accuracy": 80.0
   }
 }
 ```
@@ -95,6 +127,38 @@ Authorization: Bearer {token}
 | accuracy | float | 正确率（百分比） |
 | duration | integer | 考试时长（毫秒） |
 | score | integer | 模块分值 |
+| materials | array | 听力材料列表（包含题目和选项） |
+| independent_questions | array | 独立题目列表（不属于任何材料） |
+
+#### materials 数组中每个元素
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| id | integer | 材料ID |
+| title | string | 材料标题 |
+| description | string | 材料描述 |
+| audio_url | string | 音频URL |
+| difficulty | string | 难度：easy/medium/hard |
+| display_order | integer | 显示顺序 |
+| question_count | integer | 该材料包含的题目数 |
+| questions | array | 题目列表（包含选项） |
+
+#### questions 数组中每个元素
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| id | integer | 题目ID |
+| text_stem | string | 题干 |
+| choices | array | 选项列表 |
+
+#### choices 数组中每个元素
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| id | integer | 选项ID |
+| label | string | 选项标签（A/B/C/D） |
+| content | string | 选项内容 |
+| is_correct | boolean | 是否为正确答案 |
 
 #### 总体统计
 

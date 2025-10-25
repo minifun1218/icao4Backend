@@ -247,12 +247,13 @@ class McqQuestionsView(APIView, ResponseMixin):
 
 class McqQuestionsAllView(APIView, ResponseMixin):
     """
-    获取所有听力理解模块及用户答题情况
+    获取所有听力理解模块及用户答题情况（包含完整的材料、问题、选项）
     
-    GET /api/mcq/questions/all/
+    GET /api/mcq/questions/all/ 或 /api/mcq/question/all/
     
     返回格式：
     {
+        "is_authenticated": true,
         "modules": [
             {
                 "id": 1,
@@ -261,7 +262,27 @@ class McqQuestionsAllView(APIView, ResponseMixin):
                 "answered_count": 5,
                 "correct_count": 4,
                 "progress": 33.3,
-                "accuracy": 80.0
+                "accuracy": 80.0,
+                "duration": 600000,
+                "score": 100,
+                "materials": [
+                    {
+                        "id": 1,
+                        "title": "机场天气广播",
+                        "audio_url": "...",
+                        "difficulty": "medium",
+                        "questions": [
+                            {
+                                "id": 1,
+                                "text_stem": "...",
+                                "choices": [
+                                    {"id": 1, "label": "A", "content": "...", "is_correct": true}
+                                ]
+                            }
+                        ]
+                    }
+                ],
+                "independent_questions": []
             }
         ],
         "total_modules": 3,
@@ -293,7 +314,7 @@ class McqQuestionsAllView(APIView, ResponseMixin):
         
         for module in mcq_modules:
             # 获取该模块的所有题目
-            questions = module.module_mcq.all()
+            questions = module.module_mcq.all().prefetch_related('choices', 'material')
             question_count = questions.count()
             
             if question_count == 0:
@@ -318,6 +339,56 @@ class McqQuestionsAllView(APIView, ResponseMixin):
             progress = round((answered_count / question_count * 100), 1) if question_count > 0 else 0
             accuracy = round((correct_count / answered_count * 100), 1) if answered_count > 0 else 0
             
+            # 按材料分组题目
+            material_dict = {}
+            independent_questions = []
+            
+            for question in questions:
+                if question.material:
+                    material_id = question.material.id
+                    if material_id not in material_dict:
+                        material_dict[material_id] = {
+                            'material': question.material,
+                            'questions': []
+                        }
+                    material_dict[material_id]['questions'].append(question)
+                else:
+                    independent_questions.append(question)
+            
+            # 序列化材料和题目
+            materials_data = []
+            for material_id, data in material_dict.items():
+                material = data['material']
+                material_questions = data['questions']
+                
+                # 序列化题目
+                questions_serializer = McqQuestionDetailSerializer(
+                    material_questions,
+                    many=True,
+                    context={'request': request}
+                )
+                
+                materials_data.append({
+                    'id': material.id,
+                    'title': material.title,
+                    'description': material.description,
+                    'audio_url': material.audio_asset.get_file_url() if material.audio_asset else None,
+                    'difficulty': material.difficulty,
+                    'display_order': material.display_order,
+                    'question_count': len(material_questions),
+                    'questions': questions_serializer.data
+                })
+            
+            # 按显示顺序排序材料
+            materials_data.sort(key=lambda x: x['display_order'])
+            
+            # 序列化独立题目
+            independent_serializer = McqQuestionDetailSerializer(
+                independent_questions,
+                many=True,
+                context={'request': request}
+            )
+            
             modules_data.append({
                 'id': module.id,
                 'title': module.title or f'模块 {module.id}',
@@ -328,7 +399,9 @@ class McqQuestionsAllView(APIView, ResponseMixin):
                 'progress': progress,
                 'accuracy': accuracy,
                 'duration': module.duration,
-                'score': module.score
+                'score': module.score,
+                'materials': materials_data,
+                'independent_questions': independent_serializer.data
             })
             
             total_questions += question_count
