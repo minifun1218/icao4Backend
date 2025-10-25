@@ -132,6 +132,13 @@ class LsaResponse(models.Model):
         ('exam', '考试模式'),
     ]
 
+    modules = models.ManyToManyField(
+        to='exam.ExamModule',
+        related_name='module_lsa_response',
+        db_column='module_id',
+    )
+
+
     # 外键：题目ID (ManyToOne)
     question = models.ForeignKey(
         'LsaQuestion',

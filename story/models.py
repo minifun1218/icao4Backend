@@ -3,6 +3,7 @@ from django.core.validators import MinValueValidator
 from django.utils import timezone
 from exam.models import ExamModule
 from media.models import MediaAsset
+
 class RetellItem(models.Model):
     """
     复述题目实体类
@@ -50,6 +51,12 @@ class RetellResponse(models.Model):
         ('practice', '训练模式'),
         ('exam', '考试模式'),
     ]
+
+    modules = models.ManyToManyField(
+        to='exam.ExamModule',
+        related_name='module_story_response',
+        db_column='module_id',
+    )
 
     # 关联复述题目 (ManyToOne)
     retell_item = models.ForeignKey(

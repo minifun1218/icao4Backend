@@ -95,6 +95,11 @@ class OpiResponse(models.Model):
         ('exam', '考试模式'),
     ]
 
+    modules = models.ManyToManyField(
+        to='exam.ExamModule',
+        related_name='module_opi_response',
+        db_column='module_id',
+    )
 
     # 关联的问题 (ManyToOne)
     question = models.ForeignKey(
