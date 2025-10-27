@@ -5,9 +5,11 @@ from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.pagination import PageNumberPagination
 from django.db.models import Q
+import random
 
 from common.response import ApiResponse
 from common.mixins import ResponseMixin
+from exam.models import ExamModule
 from .models import LsaDialog, LsaQuestion, LsaResponse
 from .serializers import (
     LsaDialogSerializer,
@@ -23,6 +25,362 @@ class LsaPagination(PageNumberPagination):
     page_size_query_param = 'page_size'
     max_page_size = 100
     page_query_param = 'page'
+
+
+# ==================== LSA Questions 视图（类似 MCQ）====================
+
+class LsaQuestionsView(APIView, ResponseMixin):
+    """
+    获取LSA听力简答题目
+    
+    支持两种模式：
+    1. 按模块获取：GET /api/lsa/questions?id=1
+    2. 随机模块：GET /api/lsa/questions?mode=random
+    
+    返回格式：
+    {
+        "module": {
+            "id": 1,
+            "title": "听力简答模块1",
+            "question_count": 10
+        },
+        "dialogs": [
+            {
+                "id": 1,
+                "title": "对话标题",
+                "audio_info": {...},
+                "questions": [...]
+            }
+        ]
+    }
+    
+    参数：
+    - id: ExamModule的ID（指定模块）
+    - mode: random（随机选择一个模块）
+    """
+    permission_classes = [AllowAny]
+    
+    def get(self, request):
+        module_id = request.query_params.get('id')
+        mode = request.query_params.get('mode')
+        
+        # 新逻辑：按模块获取或随机模块
+        if module_id or mode == 'random':
+            return self._get_module_questions(request, module_id, mode)
+        
+        # 如果两个参数都不提供，返回错误
+        return self.error_response(message='请提供id参数或设置mode=random')
+    
+    def _get_module_questions(self, request, module_id=None, mode=None):
+        """获取指定模块或随机模块的所有对话和题目"""
+        user = request.user
+        
+        # 获取模块
+        if module_id:
+            # 按ID获取指定模块
+            try:
+                module = ExamModule.objects.get(
+                    id=module_id,
+                    module_type='LISTENING_SA',
+                    is_activate=True
+                )
+            except ExamModule.DoesNotExist:
+                return self.error_response(message='模块不存在或未启用')
+        elif mode == 'random':
+            # 随机选择一个模块
+            modules = ExamModule.objects.filter(
+                module_type='LISTENING_SA',
+                is_activate=True
+            )
+            
+            if not modules.exists():
+                return self.error_response(message='没有可用的听力简答模块')
+            
+            # 随机选择
+            module = random.choice(list(modules))
+        else:
+            return self.error_response(message='请提供id参数或设置mode=random')
+        
+        # 获取模块的所有对话
+        dialogs = module.module_lsa.filter(is_active=True).prefetch_related(
+            'questions'
+        ).order_by('display_order')
+        
+        # 序列化对话和题目数据
+        dialogs_data = []
+        total_questions = 0
+        
+        for dialog in dialogs:
+            # 获取该对话的所有激活问题
+            questions = dialog.questions.filter(is_active=True).order_by('display_order')
+            question_count = questions.count()
+            total_questions += question_count
+            
+            # 序列化音频信息
+            audio_info = None
+            if dialog.audio_asset:
+                audio_info = {
+                    'id': dialog.audio_asset.id,
+                    'uri': dialog.audio_asset.uri,
+                    'duration_ms': dialog.audio_asset.duration_ms
+                }
+            
+            # 序列化问题
+            questions_data = []
+            for question in questions:
+                # 如果用户登录，检查该题目是否已答
+                is_answered = False
+                if user.is_authenticated:
+                    is_answered = LsaResponse.objects.filter(
+                        user=user,
+                        question=question
+                    ).exists()
+                
+                questions_data.append({
+                    'id': question.id,
+                    'question_type': question.question_type,
+                    'question_text': question.question_text,
+                    'option_a': question.option_a,
+                    'option_b': question.option_b,
+                    'option_c': question.option_c,
+                    'option_d': question.option_d,
+                    'display_order': question.display_order,
+                    'is_answered': is_answered if user.is_authenticated else None
+                })
+            
+            dialogs_data.append({
+                'id': dialog.id,
+                'title': dialog.title,
+                'description': dialog.description,
+                'audio_asset': dialog.audio_asset_id if dialog.audio_asset else None,
+                'audio_info': audio_info,
+                'display_order': dialog.display_order,
+                'question_count': question_count,
+                'questions': questions_data
+            })
+        
+        return self.success_response(
+            data={
+                'module': {
+                    'id': module.id,
+                    'title': module.title or f'模块 {module.id}',
+                    'display_order': module.display_order,
+                    'duration': module.duration,
+                    'score': module.score,
+                    'dialog_count': len(dialogs_data),
+                    'question_count': total_questions
+                },
+                'dialogs': dialogs_data
+            },
+            message='查询成功'
+        )
+
+
+class LsaQuestionsAllView(APIView, ResponseMixin):
+    """
+    获取所有听力简答模块及用户答题情况
+    
+    GET /api/lsa/questions/all/
+    
+    返回格式：
+    {
+        "is_authenticated": true,
+        "modules": [
+            {
+                "id": 1,
+                "title": "听力简答模块1",
+                "question_count": 10,
+                "answered_count": 5,
+                "progress": 50.0,
+                "dialogs": [...]
+            }
+        ],
+        "total_modules": 3,
+        "total_questions": 30,
+        "total_answered": 15,
+        "overall_progress": 50.0
+    }
+    """
+    permission_classes = [AllowAny]
+    
+    def get(self, request):
+        user = request.user
+        
+        # 获取所有听力简答类型的模块
+        modules = ExamModule.objects.filter(
+            module_type='LISTENING_SA',
+            is_activate=True
+        ).prefetch_related('module_lsa__questions').order_by('display_order', 'id')
+        
+        modules_data = []
+        total_questions = 0
+        total_answered = 0
+        
+        # 检查用户是否已登录
+        is_authenticated = user.is_authenticated
+        
+        for module in modules:
+            # 获取该模块关联的所有对话
+            dialogs = module.module_lsa.filter(is_active=True).order_by('display_order')
+            
+            # 统计该模块的所有问题
+            module_question_count = 0
+            module_answered_count = 0
+            
+            dialogs_data = []
+            for dialog in dialogs:
+                # 获取该对话的所有激活问题
+                questions = dialog.questions.filter(is_active=True).order_by('display_order')
+                question_count = questions.count()
+                module_question_count += question_count
+                
+                # 序列化音频信息
+                audio_info = None
+                if dialog.audio_asset:
+                    audio_info = {
+                        'id': dialog.audio_asset.id,
+                        'uri': dialog.audio_asset.uri,
+                        'duration_ms': dialog.audio_asset.duration_ms
+                    }
+                
+                # 序列化问题
+                questions_data = []
+                for question in questions:
+                    # 如果用户登录，检查该题目是否已答
+                    is_answered = False
+                    if is_authenticated:
+                        is_answered = LsaResponse.objects.filter(
+                            user=user,
+                            question=question
+                        ).exists()
+                        if is_answered:
+                            module_answered_count += 1
+                    
+                    questions_data.append({
+                        'id': question.id,
+                        'question_type': question.question_type,
+                        'question_text': question.question_text,
+                        'option_a': question.option_a,
+                        'option_b': question.option_b,
+                        'option_c': question.option_c,
+                        'option_d': question.option_d,
+                        'display_order': question.display_order,
+                        'is_answered': is_answered if is_authenticated else None
+                    })
+                
+                dialogs_data.append({
+                    'id': dialog.id,
+                    'title': dialog.title,
+                    'description': dialog.description,
+                    'audio_asset': dialog.audio_asset_id if dialog.audio_asset else None,
+                    'audio_info': audio_info,
+                    'display_order': dialog.display_order,
+                    'question_count': question_count,
+                    'questions': questions_data
+                })
+            
+            if module_question_count == 0:
+                continue
+            
+            # 计算进度
+            progress = round((module_answered_count / module_question_count * 100), 1) if module_question_count > 0 else 0
+            
+            modules_data.append({
+                'id': module.id,
+                'title': module.title or f'模块 {module.id}',
+                'display_order': module.display_order or 0,
+                'dialog_count': len(dialogs_data),
+                'question_count': module_question_count,
+                'answered_count': module_answered_count,
+                'progress': progress,
+                'duration': module.duration,
+                'score': module.score,
+                'dialogs': dialogs_data,
+                'created_at': module.created_at
+            })
+            
+            total_questions += module_question_count
+            total_answered += module_answered_count
+        
+        # 计算总体进度
+        overall_progress = round((total_answered / total_questions * 100), 1) if total_questions > 0 else 0
+        
+        return self.success_response(
+            data={
+                'is_authenticated': is_authenticated,
+                'modules': modules_data,
+                'total_modules': len(modules_data),
+                'total_questions': total_questions,
+                'total_answered': total_answered,
+                'overall_progress': overall_progress
+            },
+            message='查询成功' if is_authenticated else '查询成功（未登录用户无答题记录）'
+        )
+
+
+class LsaSubmitAnswerView(APIView, ResponseMixin):
+    """
+    提交LSA听力简答答题
+    
+    POST /api/lsa/submit/
+    
+    请求体：
+    {
+        "question_id": 1,
+        "answer_audio_id": 2,  // 可选
+        "mode_type": "practice",  // practice 或 exam
+        "is_timeout": false
+    }
+    
+    返回：
+    {
+        "response_id": 123,
+        "message": "答题记录已保存"
+    }
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        user = request.user
+        question_id = request.data.get('question_id')
+        answer_audio_id = request.data.get('answer_audio_id')
+        mode_type = request.data.get('mode_type', 'practice')
+        is_timeout = request.data.get('is_timeout', False)
+        
+        # 验证参数
+        if not question_id:
+            return self.error_response(message='缺少参数: question_id')
+        
+        try:
+            question = LsaQuestion.objects.get(id=question_id)
+        except LsaQuestion.DoesNotExist:
+            return self.error_response(message='题目不存在')
+        
+        # 获取答题音频（如果提供）
+        answer_audio = None
+        if answer_audio_id:
+            from media.models import MediaAsset
+            try:
+                answer_audio = MediaAsset.objects.get(id=answer_audio_id)
+            except MediaAsset.DoesNotExist:
+                return self.error_response(message='音频资源不存在')
+        
+        # 创建答题记录
+        response = LsaResponse.objects.create(
+            user=user,
+            question=question,
+            answer_audio=answer_audio,
+            mode_type=mode_type,
+            is_timeout=is_timeout
+        )
+        
+        return self.success_response(
+            data={
+                'response_id': response.id,
+                'is_timeout': is_timeout
+            },
+            message='答题记录已保存'
+        )
 
 
 # ==================== LsaDialog 视图 ====================

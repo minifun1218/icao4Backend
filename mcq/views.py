@@ -102,34 +102,22 @@ class McqQuestionsView(APIView, ResponseMixin):
         else:
             return self.error_response(message='请提供id参数或设置mode=random')
         
-        # 获取模块的所有题目
-        questions = module.module_mcq.all().prefetch_related('choices', 'material')
-        
-        # 按材料分组题目
-        material_dict = {}
-        independent_questions = []
-        
-        for question in questions:
-            if question.material:
-                material_id = question.material.id
-                if material_id not in material_dict:
-                    material_dict[material_id] = {
-                        'material': question.material,
-                        'questions': []
-                    }
-                material_dict[material_id]['questions'].append(question)
-            else:
-                independent_questions.append(question)
+        # 获取模块关联的所有材料
+        materials = module.mcq_materials.filter(is_enabled=True).order_by('display_order', 'created_at')
         
         # 序列化材料和题目
         materials_data = []
-        for material_id, data in material_dict.items():
-            material = data['material']
-            material_questions = data['questions']
+        total_questions = 0
+        
+        for material in materials:
+            # 获取该材料下的所有题目
+            questions = material.questions.all().prefetch_related('choices')
+            question_count = questions.count()
+            total_questions += question_count
             
             # 序列化题目
             questions_serializer = McqQuestionDetailSerializer(
-                material_questions,
+                questions,
                 many=True,
                 context={'request': request}
             )
@@ -141,22 +129,9 @@ class McqQuestionsView(APIView, ResponseMixin):
                 'audio_url': material.audio_asset.get_file_url() if material.audio_asset else None,
                 'difficulty': material.difficulty,
                 'display_order': material.display_order,
-                'question_count': len(material_questions),
+                'question_count': question_count,
                 'questions': questions_serializer.data
             })
-        
-        # 按显示顺序排序
-        materials_data.sort(key=lambda x: x['display_order'])
-        
-        # 序列化独立题目
-        independent_serializer = McqQuestionDetailSerializer(
-            independent_questions,
-            many=True,
-            context={'request': request}
-        )
-        
-        # 统计总题目数
-        total_questions = sum(m['question_count'] for m in materials_data) + len(independent_questions)
         
         return self.success_response(
             data={
@@ -170,8 +145,7 @@ class McqQuestionsView(APIView, ResponseMixin):
                 },
                 'materials_count': len(materials_data),
                 'total_questions': total_questions,
-                'materials': materials_data,
-                'independent_questions': independent_serializer.data
+                'materials': materials_data
             },
             message='查询成功'
         )
@@ -251,6 +225,10 @@ class McqQuestionsAllView(APIView, ResponseMixin):
     
     GET /api/mcq/questions/all/ 或 /api/mcq/question/all/
     
+    答题进度统计逻辑：模块ID + 用户ID + 材料ID
+    
+    注意：题目只能通过材料关联到模块，不再支持独立题目
+    
     返回格式：
     {
         "is_authenticated": true,
@@ -271,18 +249,20 @@ class McqQuestionsAllView(APIView, ResponseMixin):
                         "title": "机场天气广播",
                         "audio_url": "...",
                         "difficulty": "medium",
+                        "question_count": 5,
+                        "answered_count": 3,
+                        "correct_count": 2,
+                        "progress": 60.0,
+                        "accuracy": 66.7,
                         "questions": [
                             {
                                 "id": 1,
                                 "text_stem": "...",
-                                "choices": [
-                                    {"id": 1, "label": "A", "content": "...", "is_correct": true}
-                                ]
+                                "choices": [...]
                             }
                         ]
                     }
-                ],
-                "independent_questions": []
+                ]
             }
         ],
         "total_modules": 3,
@@ -302,8 +282,8 @@ class McqQuestionsAllView(APIView, ResponseMixin):
         mcq_modules = ExamModule.objects.filter(
             module_type='LISTENING_MCQ',
             is_activate=True
-        ).prefetch_related('module_mcq')
-        
+        ).prefetch_related('mcq_materials')
+
         modules_data = []
         total_questions = 0
         total_answered = 0
@@ -313,57 +293,53 @@ class McqQuestionsAllView(APIView, ResponseMixin):
         is_authenticated = user.is_authenticated
         
         for module in mcq_modules:
-            # 获取该模块的所有题目
-            questions = module.module_mcq.all().prefetch_related('choices', 'material')
-            question_count = questions.count()
+            # 先获取该模块关联的所有材料
+            materials = module.mcq_materials.filter(is_enabled=True).order_by('display_order', 'created_at')
             
-            if question_count == 0:
-                continue
-            
-            # 只有登录用户才查询答题记录
-            answered_count = 0
-            correct_count = 0
-            
-            if is_authenticated:
-                # 获取用户在这些题目上的答题记录
-                question_ids = questions.values_list('id', flat=True)
-                responses = McqResponse.objects.filter(
-                    user=user,
-                    question_id__in=question_ids
-                )
-                
-                answered_count = responses.count()
-                correct_count = responses.filter(is_correct=True).count()
-            
-            # 计算进度和正确率
-            progress = round((answered_count / question_count * 100), 1) if question_count > 0 else 0
-            accuracy = round((correct_count / answered_count * 100), 1) if answered_count > 0 else 0
-            
-            # 按材料分组题目
-            material_dict = {}
-            independent_questions = []
-            
-            for question in questions:
-                if question.material:
-                    material_id = question.material.id
-                    if material_id not in material_dict:
-                        material_dict[material_id] = {
-                            'material': question.material,
-                            'questions': []
-                        }
-                    material_dict[material_id]['questions'].append(question)
-                else:
-                    independent_questions.append(question)
-            
-            # 序列化材料和题目
+            # 收集所有材料下的题目ID（用于统计答题情况）
+            all_question_ids = []
             materials_data = []
-            for material_id, data in material_dict.items():
-                material = data['material']
-                material_questions = data['questions']
+            
+            for material in materials:
+                # 获取该材料下的所有题目
+                questions = material.questions.all().prefetch_related('choices')
+                question_ids = list(questions.values_list('id', flat=True))
+                all_question_ids.extend(question_ids)
+                
+                material_question_count = questions.count()
+                
+                # 为每个材料单独统计答题情况（模块ID + 用户ID + 材料ID）
+                material_answered_count = 0
+                material_correct_count = 0
+                
+                if is_authenticated and material_question_count > 0:
+                    # 获取用户在当前模块、当前材料下的答题记录，按题目分组取最近一次
+                    answered_questions = set()
+                    correct_questions = set()
+                    
+                    for question_id in question_ids:
+                        # 获取该题目的最近一次答题记录
+                        latest_response = McqResponse.objects.filter(
+                            user=user,
+                            module=module,
+                            question_id=question_id
+                        ).order_by('-created_at').first()
+                        
+                        if latest_response:
+                            answered_questions.add(question_id)
+                            if latest_response.is_correct:
+                                correct_questions.add(question_id)
+                    
+                    material_answered_count = len(answered_questions)
+                    material_correct_count = len(correct_questions)
+
+                # 计算材料级别的进度和正确率
+                material_progress = round((material_answered_count / material_question_count * 100), 1) if material_question_count > 0 else 0
+                material_accuracy = round((material_correct_count / material_answered_count * 100), 1) if material_answered_count > 0 else 0
                 
                 # 序列化题目
                 questions_serializer = McqQuestionDetailSerializer(
-                    material_questions,
+                    questions,
                     many=True,
                     context={'request': request}
                 )
@@ -375,19 +351,50 @@ class McqQuestionsAllView(APIView, ResponseMixin):
                     'audio_url': material.audio_asset.get_file_url() if material.audio_asset else None,
                     'difficulty': material.difficulty,
                     'display_order': material.display_order,
-                    'question_count': len(material_questions),
+                    'question_count': material_question_count,
+                    'answered_count': material_answered_count,
+                    'correct_count': material_correct_count,
+                    'progress': material_progress,
+                    'accuracy': material_accuracy,
                     'questions': questions_serializer.data
                 })
             
-            # 按显示顺序排序材料
-            materials_data.sort(key=lambda x: x['display_order'])
+            # 注意：现在题目只能通过材料关联到模块，不再支持独立题目
             
-            # 序列化独立题目
-            independent_serializer = McqQuestionDetailSerializer(
-                independent_questions,
-                many=True,
-                context={'request': request}
-            )
+            # 统计题目总数
+            question_count = len(all_question_ids)
+            
+            if question_count == 0:
+                continue
+            
+            # 只有登录用户才查询答题记录（按题目分组取最近一次）
+            answered_count = 0
+            correct_count = 0
+            
+            if is_authenticated and question_count > 0:
+                # 按题目分组，获取每道题的最近一次答题记录
+                answered_questions_set = set()
+                correct_questions_set = set()
+                
+                for question_id in all_question_ids:
+                    # 获取该题目的最近一次答题记录
+                    latest_response = McqResponse.objects.filter(
+                        user=user,
+                        module=module,
+                        question_id=question_id
+                    ).order_by('-created_at').first()
+                    
+                    if latest_response:
+                        answered_questions_set.add(question_id)
+                        if latest_response.is_correct:
+                            correct_questions_set.add(question_id)
+                
+                answered_count = len(answered_questions_set)
+                correct_count = len(correct_questions_set)
+            
+            # 计算进度和正确率
+            progress = round((answered_count / question_count * 100), 1) if question_count > 0 else 0
+            accuracy = round((correct_count / answered_count * 100), 1) if answered_count > 0 else 0
             
             modules_data.append({
                 'id': module.id,
@@ -400,8 +407,7 @@ class McqQuestionsAllView(APIView, ResponseMixin):
                 'accuracy': accuracy,
                 'duration': module.duration,
                 'score': module.score,
-                'materials': materials_data,
-                'independent_questions': independent_serializer.data
+                'materials': materials_data
             })
             
             total_questions += question_count
@@ -434,12 +440,13 @@ class McqSubmitAnswerView(APIView, ResponseMixin):
     """
     提交MCQ答题
     
-    POST /api/mcq/submit-answer/
+    POST /api/mcq/submit/
     
     请求体：
     {
         "question_id": 1,
         "selected_choice_id": 2,
+        "module_id": 1,  // 可选：指定所属模块ID
         "mode_type": "practice",  // practice 或 exam
         "is_timeout": false
     }
@@ -457,7 +464,8 @@ class McqSubmitAnswerView(APIView, ResponseMixin):
     def post(self, request):
         user = request.user
         question_id = request.data.get('question_id')
-        selected_choice_id = request.data.get('selected_choice_id')
+        selected_choice_id = request.data.get('choice_id')
+        module_id = request.data.get('module_id')
         mode_type = request.data.get('mode_type', 'practice')
         is_timeout = request.data.get('is_timeout', False)
         
@@ -493,6 +501,26 @@ class McqSubmitAnswerView(APIView, ResponseMixin):
             mode_type=mode_type,
             is_timeout=is_timeout
         )
+        
+        # 关联模块（如果提供了 module_id）
+        if module_id:
+            try:
+                module = ExamModule.objects.get(
+                    id=module_id,
+                    module_type='LISTENING_MCQ',
+                    is_activate=True
+                )
+                response.module.add(module)
+            except ExamModule.DoesNotExist:
+                pass  # 模块不存在时忽略，不影响答题记录的保存
+        else:
+            # 如果没有提供 module_id，则从题目的材料获取关联的模块
+            if question.material:
+                modules = question.material.exam_module.filter(
+                    module_type='LISTENING_MCQ',
+                    is_activate=True
+                )
+                response.module.set(modules)
         
         # 获取正确答案
         correct_choice = question.choices.filter(is_correct=True).first()
@@ -543,14 +571,20 @@ class McqUserProgressView(APIView, ResponseMixin):
         except ExamModule.DoesNotExist:
             return self.error_response(message='模块不存在')
         
-        # 获取模块的所有题目
-        questions = module.module_mcq.all().prefetch_related('choices')
+        # 获取模块的所有题目（从材料获取）
+        all_questions = []
+        
+        # 从材料获取题目
+        materials = module.mcq_materials.filter(is_enabled=True)
+        for material in materials:
+            all_questions.extend(material.questions.all())
         
         questions_data = []
-        for question in questions:
-            # 获取用户最近的答题记录
+        for question in all_questions:
+            # 获取用户在当前模块下的最近答题记录
             latest_response = McqResponse.objects.filter(
                 user=user,
+                module=module,
                 question=question
             ).order_by('-answered_at').first()
             
@@ -560,7 +594,7 @@ class McqUserProgressView(APIView, ResponseMixin):
                 'is_answered': latest_response is not None,
                 'is_correct': latest_response.is_correct if latest_response else None,
                 'last_answered_at': latest_response.answered_at if latest_response else None,
-                'attempt_count': McqResponse.objects.filter(user=user, question=question).count()
+                'attempt_count': McqResponse.objects.filter(user=user, module=module, question=question).count()
             })
         
         return self.success_response(
@@ -568,7 +602,7 @@ class McqUserProgressView(APIView, ResponseMixin):
                 'module': {
                     'id': module.id,
                     'title': module.title,
-                    'question_count': questions.count()
+                    'question_count': len(all_questions)
                 },
                 'questions': questions_data
             },

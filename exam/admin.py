@@ -101,7 +101,9 @@ class ExamPaperAdmin(admin.ModelAdmin):
                 # 计算题目数量
                 question_count = 0
                 if module.module_type == 'LISTENING_MCQ':
-                    question_count = module.module_mcq.count()
+                    # 从材料统计题目数量
+                    materials = module.mcq_materials.filter(is_enabled=True)
+                    question_count = sum(material.questions.count() for material in materials)
                 elif module.module_type == 'STORY_RETELL':
                     question_count = module.retell_items.count()
                 elif module.module_type == 'LISTENING_SA':
@@ -216,10 +218,8 @@ class ExamModuleAdminForm(forms.ModelForm):
         
         # 如果是编辑现有对象，设置初始值
         if self.instance and self.instance.pk:
-            # MCQ: 获取当前模块关联的所有题目的材料（去重）
-            mcq_questions = self.instance.module_mcq.all()
-            mcq_material_ids = mcq_questions.filter(material__isnull=False).values_list('material_id', flat=True).distinct()
-            self.fields['mcq_materials'].initial = McqMaterial.objects.filter(id__in=mcq_material_ids)
+            # MCQ: 直接获取当前模块关联的所有材料
+            self.fields['mcq_materials'].initial = self.instance.mcq_materials.all()
             
             self.fields['retell_items'].initial = self.instance.retell_items.all()
             self.fields['lsa_dialogs'].initial = self.instance.module_lsa.all()
@@ -234,25 +234,19 @@ class ExamModuleAdminForm(forms.ModelForm):
         
         # 保存反向多对多关系
         if self.instance.pk:
-            # 更新 MCQ 听力材料：将选中材料下的所有题目关联到模块
+            # 更新 MCQ 听力材料：直接关联材料到模块
             if 'mcq_materials' in self.cleaned_data:
-                from mcq.models import McqQuestion
-                
                 selected_materials = self.cleaned_data['mcq_materials']
                 
-                # 获取所有选中材料下的题目
-                questions_to_add = []
+                # 清除当前模块在所有材料上的关联
+                from mcq.models import McqMaterial
+                McqMaterial.objects.filter(exam_module=instance).update()
+                for material in McqMaterial.objects.filter(exam_module=instance):
+                    material.exam_module.remove(instance)
+                
+                # 为选中的材料添加当前模块的关联
                 for material in selected_materials:
-                    questions_to_add.extend(material.questions.all())
-                
-                # 清除当前模块下所有通过材料关联的题目
-                # 保留那些没有关联材料的独立题目
-                current_questions = instance.module_mcq.all()
-                standalone_questions = current_questions.filter(material__isnull=True)
-                
-                # 设置新的题目列表：独立题目 + 选中材料的题目
-                all_questions = list(standalone_questions) + questions_to_add
-                instance.module_mcq.set(all_questions)
+                    material.exam_module.add(instance)
             
             # 更新故事复述题
             if 'retell_items' in self.cleaned_data:
@@ -445,7 +439,9 @@ class ExamModuleAdmin(admin.ModelAdmin):
         module_type = obj.module_type
         
         if module_type == 'LISTENING_MCQ':
-            count = obj.module_mcq.count()
+            # 从材料统计题目数量
+            materials = obj.mcq_materials.filter(is_enabled=True)
+            count = sum(material.questions.count() for material in materials)
         elif module_type == 'STORY_RETELL':
             count = obj.retell_items.count()
         elif module_type == 'LISTENING_SA':
@@ -513,14 +509,12 @@ class ExamModuleAdmin(admin.ModelAdmin):
         """渲染MCQ听力材料列表"""
         from mcq.models import McqMaterial
         
-        # 获取当前模块关联的所有题目
-        mcq_questions = obj.module_mcq.all()
-        # 获取这些题目关联的材料（去重）
-        material_ids = mcq_questions.filter(material__isnull=False).values_list('material_id', flat=True).distinct()
-        materials = McqMaterial.objects.filter(id__in=material_ids).order_by('display_order', 'title')
+        # 直接获取当前模块关联的所有材料
+        materials = obj.mcq_materials.filter(is_enabled=True).order_by('display_order', 'title')
         
         count = materials.count()
-        total_questions = mcq_questions.count()
+        # 统计所有材料下的题目总数
+        total_questions = sum(material.questions.count() for material in materials)
         
         html = f'''
         <div style="padding: 15px; background: #f8f9fa; border-left: 4px solid #007bff; border-radius: 4px;">

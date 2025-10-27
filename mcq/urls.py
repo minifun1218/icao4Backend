@@ -17,11 +17,9 @@ urlpatterns = [
     
     # 获取所有听力理解模块及用户答题情况
     path('questions/all/', McqQuestionsAllView.as_view(), name='questions-all'),
-    path('question/all/', McqQuestionsAllView.as_view(), name='question-all'),  # 别名路由
-    
+
     # 提交答题
     path('submit/', McqSubmitAnswerView.as_view(), name='submit-answer'),
     
-    # 获取用户在指定模块的答题进度
-    path('progress/<int:module_id>/', McqUserProgressView.as_view(), name='user-progress'),
+
 ]

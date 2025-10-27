@@ -39,7 +39,15 @@ class McqMaterial(models.Model):
         verbose_name='关联音频资源',
         help_text='听力材料的音频文件'
     )
-    
+    # 模块ID (ManyToOne)
+    exam_module = models.ManyToManyField(
+        to='exam.ExamModule',
+        related_name='mcq_materials',
+        db_column='module_id',
+        blank=True,
+        verbose_name='关联考试模块'
+    )
+
     # 材料内容/文本（可选）
     content = models.TextField(
         null=True,
@@ -132,15 +140,6 @@ class McqQuestion(models.Model):
         help_text='如果题目属于某个材料，选择对应的材料'
     )
     
-    # 模块ID (ManyToOne)
-    exam_module = models.ManyToManyField(
-        to='exam.ExamModule',
-        related_name='module_mcq',
-        db_column='module_id',
-        blank=True,
-        verbose_name='关联考试模块'
-    )
-
     # 音频ID (ManyToOne) - 单个题目的音频（如果没有关联材料）
     audio_asset = models.ForeignKey(
         'media.MediaAsset',
@@ -171,10 +170,38 @@ class McqQuestion(models.Model):
     def __str__(self):
         return f"MCQ Question {self.id}"
     
+    def save(self, *args, **kwargs):
+        """保存时自动设置题干（如果为空）"""
+        if not self.text_stem:
+            if self.audio_asset:
+                # 从音频文件名提取题干
+                import os
+                if self.audio_asset.file:
+                    # 获取文件名（不含路径）
+                    filename = os.path.basename(self.audio_asset.file.name)
+                    # 去掉扩展名
+                    text_without_ext = os.path.splitext(filename)[0]
+                    # 清理文件名（替换下划线和连字符为空格）
+                    self.text_stem = text_without_ext.replace('_', ' ').replace('-', ' ')
+                elif self.audio_asset.title:
+                    # 如果文件为空，使用音频资源的标题
+                    self.text_stem = self.audio_asset.title
+                elif self.audio_asset.description:
+                    # 如果标题也为空，使用描述
+                    self.text_stem = self.audio_asset.description
+                else:
+                    # 音频资源没有文件、标题和描述
+                    self.text_stem = f'Question {timezone.now().strftime("%Y%m%d%H%M%S")}'
+            elif self.material:
+                # 如果没有独立音频但有关联材料，使用材料标题
+                self.text_stem = f'{self.material.title} - Question'
+            else:
+                # 没有音频资源和材料时的备选方案
+                self.text_stem = f'Question {timezone.now().strftime("%Y%m%d%H%M%S")}'
+        
+        super().save(*args, **kwargs)
+
     def get_audio(self):
-        """获取题目音频（优先使用材料音频）"""
-        if self.material and self.material.audio_asset:
-            return self.material.audio_asset
         return self.audio_asset
     
     def get_audio_url(self):
@@ -265,7 +292,6 @@ class McqResponse(models.Model):
         related_name='module_mcq_response',
         db_column='module_id',
     )
-
 
     # 问题本体 (ManyToOne)
     question = models.ForeignKey(

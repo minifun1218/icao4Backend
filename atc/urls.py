@@ -3,6 +3,11 @@ ATC 路由配置
 """
 from django.urls import path
 from .views import (
+    # ATC Questions views (类似 MCQ)
+    AtcQuestionsView,
+    AtcQuestionsAllView,
+    AtcSubmitAnswerView,
+    
     # Airport views
     AirportListView,
     AirportDetailView,
@@ -23,7 +28,17 @@ from .views import (
 app_name = 'atc'
 
 urlpatterns = [
-    # ==================== Airport 路由 ====================
+    # ==================== ATC Questions 路由（类似 MCQ）====================
+    # 获取题目（支持顺序/随机模式）- 类似 mcq
+    path('questions', AtcQuestionsView.as_view(), name='questions-no-slash'),
+    
+    # 获取所有ATC通讯模块及用户答题情况 - 类似 mcq
+    path('questions/all/', AtcQuestionsAllView.as_view(), name='questions-all'),
+    
+    # 提交答题 - 类似 mcq
+    path('submit/', AtcSubmitAnswerView.as_view(), name='submit-answer'),
+    
+    # ==================== Airport 路由（旧接口，保留兼容）====================
     # 机场列表（分页查询）
     path('airport/list/', AirportListView.as_view(), name='airport-list'),
     
@@ -33,7 +48,7 @@ urlpatterns = [
     # 通过ICAO代码查询机场
     path('airport/icao/<str:icao>/', AirportByIcaoView.as_view(), name='airport-by-icao'),
     
-    # ==================== AtcScenario 路由 ====================
+    # ==================== AtcScenario 路由（旧接口，保留兼容）====================
     # 场景列表（分页查询）
     path('scenario/list/', AtcScenarioListView.as_view(), name='scenario-list'),
     
@@ -49,7 +64,7 @@ urlpatterns = [
     # 获取指定场景的所有轮次
     path('scenario/<int:scenario_id>/turns/', AtcTurnsByScenarioView.as_view(), name='scenario-turns'),
     
-    # ==================== AtcTurn 路由 ====================
+    # ==================== AtcTurn 路由（旧接口，保留兼容）====================
     # 轮次列表（分页查询）
     path('turn/list/', AtcTurnListView.as_view(), name='turn-list'),
     

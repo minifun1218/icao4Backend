@@ -140,10 +140,13 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = "zh-hans"  # 中文简体
 
-TIME_ZONE = "Asia/Shanghai"  # 中国时区
+TIME_ZONE = "Asia/Shanghai"  # 中国时区（东八区 UTC+8）
 
 USE_I18N = True
 
+# 时区设置说明：
+# USE_TZ = True:  数据库存储UTC时间，显示时自动转换为Asia/Shanghai（推荐）
+# USE_TZ = False: 数据库直接存储Asia/Shanghai本地时间
 USE_TZ = True
 
 

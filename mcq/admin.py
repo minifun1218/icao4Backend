@@ -66,11 +66,12 @@ class McqMaterialAdmin(admin.ModelAdmin):
         'audio_preview',
         'difficulty',
         'question_count_display',
+        'module_display',
         'is_enabled',
         'display_order',
         'created_at'
     ]
-    list_filter = ['difficulty', 'is_enabled', 'created_at']
+    list_filter = ['difficulty', 'is_enabled', 'exam_module', 'created_at']
     search_fields = ['title', 'description', 'content']
     ordering = ['display_order', '-created_at']
     
@@ -81,6 +82,10 @@ class McqMaterialAdmin(admin.ModelAdmin):
         }),
         ('音频资源', {
             'fields': ('audio_asset', 'audio_player_display')
+        }),
+        ('关联模块', {
+            'fields': ('exam_module',),
+            'description': '💡 选择该材料所属的试题模块（可多选）。注意：材料关联到模块后，材料下的所有题目都会自动关联到该模块'
         }),
         ('材料内容', {
             'fields': ('content',),
@@ -94,6 +99,9 @@ class McqMaterialAdmin(admin.ModelAdmin):
     )
     
     readonly_fields = ['created_at', 'updated_at', 'audio_player_display']
+    
+    # 多对多字段使用水平过滤器
+    filter_horizontal = ['exam_module']
     
     def audio_preview(self, obj):
         """列表页音频预览（可播放）"""
@@ -155,6 +163,20 @@ class McqMaterialAdmin(admin.ModelAdmin):
             )
         return '0 个问题'
     question_count_display.short_description = '关联问题'
+    
+    def module_display(self, obj):
+        """显示关联的模块"""
+        modules = obj.exam_module.all()
+        if modules:
+            module_list = ', '.join([f'{m.title}' for m in modules[:3]])
+            if modules.count() > 3:
+                module_list += f' +{modules.count() - 3}个'
+            return format_html(
+                '<span style="color: #28a745;">{}</span>',
+                module_list
+            )
+        return format_html('<span style="color: #999;">未关联</span>')
+    module_display.short_description = '关联模块'
 
 
 @admin.register(McqQuestion)
@@ -165,52 +187,30 @@ class McqQuestionAdmin(admin.ModelAdmin):
     list_display = [
         'id',
         'material',
-        'text_stem_short',
+        'text_stem',
         'audio_preview',
         'choice_count',
         'correct_answer',
-        'module_display',
+
         'created_at'
     ]
-    list_filter = ['material', 'created_at', 'exam_module']
+    list_filter = ['material', 'created_at']
     search_fields = ['text_stem', 'material__title']
     ordering = ['-created_at']
     
     fieldsets = (
         ('关联信息', {
-            'fields': ('material',),
+            'fields': ('material','text_stem','audio_asset', 'audio_player_display','created_at'),
             'description': '如果题目属于某个听力材料，请选择对应的材料'
         }),
-        ('题目信息', {
-            'fields': ('text_stem',)
-        }),
-        ('音频资源', {
-            'fields': ('audio_asset', 'audio_player_display'),
-            'description': '如果已关联材料，可留空使用材料音频；也可单独上传题目音频'
-        }),
-        ('关联模块', {
-            'fields': ('exam_module',),
-            'description': '💡 选择该题目所属的试题模块（可多选）'
-        }),
-        ('时间信息', {
-            'fields': ('created_at',),
-            'classes': ('collapse',)
-        }),
+
     )
-    
     readonly_fields = ['created_at', 'audio_player_display']
     
-    filter_horizontal = ['exam_module']
-    
+
     inlines = [McqChoiceInline]
     
-    def module_display(self, obj):
-        """显示关联的模块"""
-        modules = obj.exam_module.all()
-        if modules:
-            return ', '.join([f'{m.title}' for m in modules[:3]])
-        return '-'
-    module_display.short_description = '关联模块'
+
     
     def text_stem_short(self, obj):
         """显示题干缩略"""
@@ -347,13 +347,15 @@ class McqResponseAdmin(admin.ModelAdmin):
         'question',
         'user',
         'selected_choice',
-        'is_correct',
+        'is_correct_display',
+        'module_display',
+        'mode_type',
         'is_timeout',
         'answered_at',
         'created_at'
     ]
-    list_filter = ['is_correct', 'is_timeout', 'answered_at', 'created_at']
-    search_fields = ['user__username', 'question__text_stem']
+    list_filter = ['is_correct', 'mode_type', 'is_timeout', 'module', 'answered_at', 'created_at']
+    search_fields = ['user__nickname', 'user__openid', 'question__text_stem']
     ordering = ['-created_at']
     
     fieldsets = (
@@ -361,7 +363,11 @@ class McqResponseAdmin(admin.ModelAdmin):
             'fields': ('question', 'user')
         }),
         ('回答信息', {
-            'fields': ('selected_choice', 'is_correct', 'is_timeout', 'answered_at')
+            'fields': ('selected_choice', 'is_correct', 'mode_type', 'is_timeout', 'answered_at')
+        }),
+        ('关联模块', {
+            'fields': ('module',),
+            'description': '该答题记录所属的模块（可多选）'
         }),
         ('时间信息', {
             'fields': ('created_at',),
@@ -370,3 +376,29 @@ class McqResponseAdmin(admin.ModelAdmin):
     )
     
     readonly_fields = ['created_at', 'answered_at']
+    
+    filter_horizontal = ['module']
+    
+    def is_correct_display(self, obj):
+        """显示是否正确（带颜色）"""
+        if obj.is_correct is None:
+            return format_html('<span style="color: #999;">未判分</span>')
+        elif obj.is_correct:
+            return format_html('<span style="color: #28a745; font-weight: bold;">✓ 正确</span>')
+        else:
+            return format_html('<span style="color: #dc3545; font-weight: bold;">✗ 错误</span>')
+    is_correct_display.short_description = '是否正确'
+    
+    def module_display(self, obj):
+        """显示关联的模块"""
+        modules = obj.module.all()
+        if modules:
+            module_list = ', '.join([f'{m.title}' for m in modules[:2]])
+            if modules.count() > 2:
+                module_list += f' +{modules.count() - 2}个'
+            return format_html(
+                '<span style="color: #007bff;">{}</span>',
+                module_list
+            )
+        return format_html('<span style="color: #999;">未关联</span>')
+    module_display.short_description = '关联模块'
