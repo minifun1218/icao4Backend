@@ -36,17 +36,13 @@ class OpiTopicAdmin(admin.ModelAdmin):
     
     fieldsets = (
         ('基本信息', {
-            'fields': ('title', 'description', 'order'),
+            'fields': ('title', 'description', 'order', 'created_at'),
             'description': '💡 提示：话题的基本信息'
         }),
-        ('关联模块', {
-            'fields': ('exam_module',),
-            'description': '💡 选择该话题所属的试题模块（可多选）'
-        }),
-        ('时间信息', {
-            'fields': ('created_at',),
-            'classes': ('collapse',)
-        }),
+        # ('关联模块', {
+        #     'fields': ('exam_module',),
+        #     'description': '💡 选择该话题所属的试题模块（可多选）'
+        # }),
     )
     
     readonly_fields = ['created_at']

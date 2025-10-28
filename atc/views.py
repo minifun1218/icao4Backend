@@ -32,8 +32,7 @@ class AtcPagination(PageNumberPagination):
     max_page_size = 100  # 最大每页100条
     page_query_param = 'page'  # 页码参数名
 
-
-# ==================== ATC Questions 视图（类似 MCQ）====================
+# ==================== ATC Questions 视图 ====================
 
 class AtcQuestionsView(APIView, ResponseMixin):
     """
@@ -87,7 +86,7 @@ class AtcQuestionsView(APIView, ResponseMixin):
             try:
                 module = ExamModule.objects.get(
                     id=module_id,
-                    module_type='ATC_COMM',
+                    module_type='ATC_SIM',
                     is_activate=True
                 )
             except ExamModule.DoesNotExist:
@@ -95,12 +94,12 @@ class AtcQuestionsView(APIView, ResponseMixin):
         elif mode == 'random':
             # 随机选择一个模块
             modules = ExamModule.objects.filter(
-                module_type='ATC_COMM',
+                module_type='ATC_SIM',
                 is_activate=True
             )
             
             if not modules.exists():
-                return self.error_response(message='没有可用的ATC通讯模块')
+                return self.error_response(message='没有可用的ATC模拟通话模块')
             
             # 随机选择
             module = random.choice(list(modules))
@@ -109,7 +108,7 @@ class AtcQuestionsView(APIView, ResponseMixin):
         
         # 获取模块的所有场景
         scenarios = module.atc_scenarios.filter(is_active=True).select_related('airport').prefetch_related(
-            'turns__audio'
+            'atc_turns__audio'
         ).order_by('created_at')
         
         # 序列化场景和轮次数据
@@ -118,7 +117,7 @@ class AtcQuestionsView(APIView, ResponseMixin):
         
         for scenario in scenarios:
             # 获取该场景的所有激活轮次
-            turns = scenario.turns.filter(is_active=True).order_by('turn_number')
+            turns = scenario.atc_turns.filter(is_active=True).order_by('turn_number')
             turn_count = turns.count()
             total_turns += turn_count
             
@@ -220,9 +219,9 @@ class AtcQuestionsAllView(APIView, ResponseMixin):
         
         # 获取所有ATC通讯类型的模块
         modules = ExamModule.objects.filter(
-            module_type='ATC_COMM',
+            module_type='ATC_SIM',
             is_activate=True
-        ).prefetch_related('atc_scenarios__airport', 'atc_scenarios__turns__audio').order_by('display_order', 'id')
+        ).prefetch_related('atc_scenarios__airport', 'atc_scenarios__atc_turns__audio').order_by('display_order', 'id')
         
         modules_data = []
         total_turns = 0
@@ -242,7 +241,7 @@ class AtcQuestionsAllView(APIView, ResponseMixin):
             scenarios_data = []
             for scenario in scenarios:
                 # 获取该场景的所有激活轮次
-                turns = scenario.turns.filter(is_active=True).order_by('turn_number')
+                turns = scenario.atc_turns.filter(is_active=True).order_by('turn_number')
                 turn_count = turns.count()
                 module_turn_count += turn_count
                 
@@ -342,11 +341,23 @@ class AtcSubmitAnswerView(APIView, ResponseMixin):
     
     POST /api/atc/submit/
     
-    请求体：
+    请求体（支持两种方式）：
+    方式1 - 直接上传音频文件（multipart/form-data）：
     {
         "turn_id": 1,
-        "audio_file_path_id": 2,  // 必填
+        "answer_audio_file": <file>,  // 上传的音频文件
         "mode_type": "practice",  // practice 或 exam
+        "module_id": 1,  // 可选，模块ID
+        "is_timeout": false,
+        "score": 85.5  // 可选
+    }
+    
+    方式2 - 提供音频资源ID（application/json）：
+    {
+        "turn_id": 1,
+        "audio_file_path_id": 2,  // 已存在的音频资源ID
+        "mode_type": "practice",
+        "module_id": 1,  // 可选
         "is_timeout": false,
         "score": 85.5  // 可选
     }
@@ -354,6 +365,7 @@ class AtcSubmitAnswerView(APIView, ResponseMixin):
     返回：
     {
         "response_id": 123,
+        "audio_id": 456,  // 新创建的音频资源ID（如果上传了文件）
         "message": "答题记录已保存"
     }
     """
@@ -361,9 +373,11 @@ class AtcSubmitAnswerView(APIView, ResponseMixin):
     
     def post(self, request):
         user = request.user
+        print(request.data)
+        
         turn_id = request.data.get('turn_id')
-        audio_file_path_id = request.data.get('audio_file_path_id')
         mode_type = request.data.get('mode_type', 'practice')
+        module_id = request.data.get('module_id')
         is_timeout = request.data.get('is_timeout', False)
         score = request.data.get('score')
         
@@ -371,20 +385,48 @@ class AtcSubmitAnswerView(APIView, ResponseMixin):
         if not turn_id:
             return self.error_response(message='缺少参数: turn_id')
         
-        if not audio_file_path_id:
-            return self.error_response(message='缺少参数: audio_file_path_id')
-        
         try:
             turn = AtcTurn.objects.get(id=turn_id)
         except AtcTurn.DoesNotExist:
             return self.error_response(message='轮次不存在')
         
-        # 获取答题音频
-        from media.models import MediaAsset
-        try:
-            audio_file = MediaAsset.objects.get(id=audio_file_path_id)
-        except MediaAsset.DoesNotExist:
-            return self.error_response(message='音频资源不存在')
+        # 处理音频资源（支持两种方式）
+        audio_file = None
+        audio_id = None
+        
+        # 方式1：前端上传音频文件
+        answer_audio_file = request.FILES.get('answer_audio_file')
+        if answer_audio_file:
+            from media.models import MediaAsset
+            import re
+            
+            # 从文件名中提取时长信息（如果有）
+            # 文件名格式：xxxxx.durationTime=16956.mp3 或 xxxxx.durationTime16956.mp3
+            duration_ms = None
+            filename = answer_audio_file.name
+            duration_match = re.search(r'durationTime[=_]?(\d+)', filename)
+            if duration_match:
+                duration_ms = int(duration_match.group(1))
+            
+            # 创建音频资源
+            audio_file = MediaAsset.objects.create(
+                media_type='audio',
+                file=answer_audio_file,
+                duration_ms=duration_ms,
+                description=f'ATC答题录音 - 用户{user.id} - 轮次{turn_id}'
+            )
+            audio_id = audio_file.id
+        
+        # 方式2：前端提供已存在的音频资源ID
+        else:
+            audio_file_path_id = request.data.get('audio_file_path_id')
+            if audio_file_path_id:
+                from media.models import MediaAsset
+                try:
+                    audio_file = MediaAsset.objects.get(id=audio_file_path_id)
+                    audio_id = audio_file.id
+                except MediaAsset.DoesNotExist:
+                    return self.error_response(message='音频资源不存在')
         
         # 创建答题记录
         response = AtcTurnResponse.objects.create(
@@ -396,9 +438,18 @@ class AtcSubmitAnswerView(APIView, ResponseMixin):
             score=score
         )
         
+        # 如果提供了模块ID，关联到该模块
+        if module_id:
+            try:
+                module = ExamModule.objects.get(id=module_id)
+                response.modules.add(module)
+            except ExamModule.DoesNotExist:
+                pass  # 模块不存在，继续处理，不影响主流程
+        
         return self.success_response(
             data={
                 'response_id': response.id,
+                'audio_id': audio_id,
                 'is_timeout': is_timeout,
                 'score': float(score) if score else None
             },
@@ -406,477 +457,3 @@ class AtcSubmitAnswerView(APIView, ResponseMixin):
         )
 
 
-# ==================== Airport 视图 ====================
-
-class AirportListView(APIView, ResponseMixin):
-    """
-    机场列表视图（分页查询）
-    
-    GET /api/atc/airport/list/
-    Query参数:
-        - page: 页码（默认1）
-        - page_size: 每页数量（默认10，最大100）
-        - is_active: 是否激活（可选，true/false）
-        - country: 国家过滤（可选）
-        - city: 城市过滤（可选）
-        - search: 搜索关键词（搜索ICAO代码、机场名称、城市）
-    
-    返回:
-    {
-        "code": 200,
-        "message": "success",
-        "data": {
-            "count": 总数,
-            "next": 下一页URL,
-            "previous": 上一页URL,
-            "results": [机场列表]
-        }
-    }
-    """
-    permission_classes = [AllowAny]
-    
-    def get(self, request):
-        # 获取查询参数
-        is_active = request.query_params.get('is_active')
-        country = request.query_params.get('country')
-        city = request.query_params.get('city')
-        search = request.query_params.get('search')
-        
-        # 基础查询集
-        queryset = Airport.objects.all()
-        
-        # 过滤条件
-        if is_active is not None:
-            is_active_bool = is_active.lower() == 'true'
-            queryset = queryset.filter(is_active=is_active_bool)
-        
-        if country:
-            queryset = queryset.filter(country__icontains=country)
-        
-        if city:
-            queryset = queryset.filter(city__icontains=city)
-        
-        # 搜索
-        if search:
-            queryset = queryset.filter(
-                Q(icao__icontains=search) |
-                Q(name__icontains=search) |
-                Q(city__icontains=search)
-            )
-        
-        # 分页
-        paginator = AtcPagination()
-        page = paginator.paginate_queryset(queryset, request)
-        
-        if page is not None:
-            serializer = AirportListSerializer(page, many=True)
-            result = paginator.get_paginated_response(serializer.data)
-            return self.success_response(
-                data=result.data,
-                message='查询成功'
-            )
-        
-        # 如果不分页
-        serializer = AirportListSerializer(queryset, many=True)
-        return self.success_response(
-            data=serializer.data,
-            message='查询成功'
-        )
-
-
-class AirportDetailView(APIView, ResponseMixin):
-    """
-    机场详情视图
-    
-    GET /api/atc/airport/detail/<id>/
-    
-    返回:
-    {
-        "code": 200,
-        "message": "success",
-        "data": {机场详细信息}
-    }
-    """
-    permission_classes = [AllowAny]
-    
-    def get(self, request, pk):
-        try:
-            airport = Airport.objects.get(pk=pk)
-            serializer = AirportSerializer(airport)
-            return self.success_response(
-                data=serializer.data,
-                message='查询成功'
-            )
-        except Airport.DoesNotExist:
-            return self.not_found_response(
-                message='机场不存在'
-            )
-
-
-class AirportByIcaoView(APIView, ResponseMixin):
-    """
-    通过ICAO代码查询机场
-    
-    GET /api/atc/airport/icao/<icao>/
-    
-    返回机场详细信息
-    """
-    permission_classes = [AllowAny]
-    
-    def get(self, request, icao):
-        try:
-            airport = Airport.objects.get(icao=icao.upper())
-            serializer = AirportSerializer(airport)
-            return self.success_response(
-                data=serializer.data,
-                message='查询成功'
-            )
-        except Airport.DoesNotExist:
-            return self.not_found_response(
-                message=f'机场 {icao} 不存在'
-            )
-
-
-# ==================== AtcScenario 视图 ====================
-
-class AtcScenarioListView(APIView, ResponseMixin):
-    """
-    ATC场景列表视图（分页查询）
-    
-    GET /api/atc/scenario/list/
-    Query参数:
-        - page: 页码（默认1）
-        - page_size: 每页数量（默认10，最大100）
-        - is_active: 是否激活（可选，true/false）
-        - airport: 机场ID（可选）
-        - airport_icao: 机场ICAO代码（可选）
-        - module: 模块ID（可选）
-        - search: 搜索关键词（搜索标题、描述）
-    
-    返回:
-    {
-        "code": 200,
-        "message": "success",
-        "data": {
-            "count": 总数,
-            "next": 下一页URL,
-            "previous": 上一页URL,
-            "results": [场景列表]
-        }
-    }
-    """
-    permission_classes = [AllowAny]
-    
-    def get(self, request):
-        # 获取查询参数
-        is_active = request.query_params.get('is_active')
-        airport = request.query_params.get('airport')
-        airport_icao = request.query_params.get('airport_icao')
-        module = request.query_params.get('module')
-        search = request.query_params.get('search')
-        
-        # 基础查询集
-        queryset = AtcScenario.objects.select_related('airport', 'module').all()
-        
-        # 过滤条件
-        if is_active is not None:
-            is_active_bool = is_active.lower() == 'true'
-            queryset = queryset.filter(is_active=is_active_bool)
-        
-        if airport:
-            queryset = queryset.filter(airport_id=airport)
-        
-        if airport_icao:
-            queryset = queryset.filter(airport__icao=airport_icao.upper())
-        
-        if module:
-            queryset = queryset.filter(module_id=module)
-        
-        # 搜索
-        if search:
-            queryset = queryset.filter(
-                Q(title__icontains=search) |
-                Q(description__icontains=search)
-            )
-        
-        # 分页
-        paginator = AtcPagination()
-        page = paginator.paginate_queryset(queryset, request)
-        
-        if page is not None:
-            serializer = AtcScenarioListSerializer(page, many=True)
-            result = paginator.get_paginated_response(serializer.data)
-            return self.success_response(
-                data=result.data,
-                message='查询成功'
-            )
-        
-        # 如果不分页
-        serializer = AtcScenarioListSerializer(queryset, many=True)
-        return self.success_response(
-            data=serializer.data,
-            message='查询成功'
-        )
-
-
-class AtcScenarioDetailView(APIView, ResponseMixin):
-    """
-    ATC场景详情视图（包含所有轮次）
-    
-    GET /api/atc/scenario/detail/<id>/
-    
-    返回:
-    {
-        "code": 200,
-        "message": "success",
-        "data": {场景详细信息，包含turns列表}
-    }
-    """
-    permission_classes = [AllowAny]
-    
-    def get(self, request, pk):
-        try:
-            scenario = AtcScenario.objects.select_related('airport', 'module').get(pk=pk)
-            serializer = AtcScenarioDetailSerializer(scenario)
-            return self.success_response(
-                data=serializer.data,
-                message='查询成功'
-            )
-        except AtcScenario.DoesNotExist:
-            return self.not_found_response(
-                message='场景不存在'
-            )
-
-
-class AtcScenarioActiveListView(APIView, ResponseMixin):
-    """
-    获取激活的ATC场景列表
-    
-    GET /api/atc/scenario/active/
-    Query参数:
-        - airport: 机场ID（可选）
-        - airport_icao: 机场ICAO代码（可选）
-        - page: 页码（可选）
-        - page_size: 每页数量（可选）
-    
-    返回所有激活的场景
-    """
-    permission_classes = [AllowAny]
-    
-    def get(self, request):
-        # 基础查询集
-        queryset = AtcScenario.objects.select_related('airport', 'module').filter(is_active=True)
-        
-        # 过滤条件
-        airport = request.query_params.get('airport')
-        airport_icao = request.query_params.get('airport_icao')
-        
-        if airport:
-            queryset = queryset.filter(airport_id=airport)
-        
-        if airport_icao:
-            queryset = queryset.filter(airport__icao=airport_icao.upper())
-        
-        # 分页（可选）
-        if request.query_params.get('page'):
-            paginator = AtcPagination()
-            page = paginator.paginate_queryset(queryset, request)
-            if page is not None:
-                serializer = AtcScenarioDetailSerializer(page, many=True)
-                result = paginator.get_paginated_response(serializer.data)
-                return self.success_response(
-                    data=result.data,
-                    message='查询成功'
-                )
-        
-        # 不分页，返回所有
-        serializer = AtcScenarioDetailSerializer(queryset, many=True)
-        return self.success_response(
-            data=serializer.data,
-            message='查询成功'
-        )
-
-
-# ==================== AtcTurn 视图 ====================
-
-class AtcTurnListView(APIView, ResponseMixin):
-    """
-    ATC轮次列表视图（分页查询）
-    
-    GET /api/atc/turn/list/
-    Query参数:
-        - page: 页码（默认1）
-        - page_size: 每页数量（默认10，最大100）
-        - is_active: 是否激活（可选，true/false）
-        - scenario: 场景ID（可选）
-        - speaker_type: 说话者类型（可选，pilot/controller）
-    
-    返回:
-    {
-        "code": 200,
-        "message": "success",
-        "data": {
-            "count": 总数,
-            "next": 下一页URL,
-            "previous": 上一页URL,
-            "results": [轮次列表]
-        }
-    }
-    """
-    permission_classes = [AllowAny]
-    
-    def get(self, request):
-        # 获取查询参数
-        is_active = request.query_params.get('is_active')
-        scenario = request.query_params.get('scenario')
-        speaker_type = request.query_params.get('speaker_type')
-        
-        # 基础查询集
-        queryset = AtcTurn.objects.select_related('scenario', 'audio').all()
-        
-        # 过滤条件
-        if is_active is not None:
-            is_active_bool = is_active.lower() == 'true'
-            queryset = queryset.filter(is_active=is_active_bool)
-        
-        if scenario:
-            queryset = queryset.filter(scenario_id=scenario)
-        
-        if speaker_type:
-            queryset = queryset.filter(speaker_type=speaker_type)
-        
-        # 分页
-        paginator = AtcPagination()
-        page = paginator.paginate_queryset(queryset, request)
-        
-        if page is not None:
-            serializer = AtcTurnSerializer(page, many=True)
-            result = paginator.get_paginated_response(serializer.data)
-            return self.success_response(
-                data=result.data,
-                message='查询成功'
-            )
-        
-        # 如果不分页
-        serializer = AtcTurnSerializer(queryset, many=True)
-        return self.success_response(
-            data=serializer.data,
-            message='查询成功'
-        )
-
-
-class AtcTurnDetailView(APIView, ResponseMixin):
-    """
-    ATC轮次详情视图
-    
-    GET /api/atc/turn/detail/<id>/
-    
-    返回:
-    {
-        "code": 200,
-        "message": "success",
-        "data": {轮次详细信息}
-    }
-    """
-    permission_classes = [AllowAny]
-    
-    def get(self, request, pk):
-        try:
-            turn = AtcTurn.objects.select_related('scenario', 'audio').get(pk=pk)
-            serializer = AtcTurnDetailSerializer(turn)
-            return self.success_response(
-                data=serializer.data,
-                message='查询成功'
-            )
-        except AtcTurn.DoesNotExist:
-            return self.not_found_response(
-                message='轮次不存在'
-            )
-
-
-class AtcTurnsByScenarioView(APIView, ResponseMixin):
-    """
-    获取指定场景的所有轮次
-    
-    GET /api/atc/scenario/<scenario_id>/turns/
-    Query参数:
-        - is_active: 是否只显示激活的轮次（可选，默认true）
-    
-    返回指定场景的所有轮次列表（按轮次序号排序）
-    """
-    permission_classes = [AllowAny]
-    
-    def get(self, request, scenario_id):
-        try:
-            scenario = AtcScenario.objects.get(pk=scenario_id)
-        except AtcScenario.DoesNotExist:
-            return self.not_found_response(
-                message='场景不存在'
-            )
-        
-        # 获取is_active参数
-        is_active_param = request.query_params.get('is_active', 'true')
-        is_active = is_active_param.lower() == 'true'
-        
-        # 查询轮次
-        if is_active:
-            turns = scenario.turns.filter(is_active=True).order_by('turn_number')
-        else:
-            turns = scenario.turns.all().order_by('turn_number')
-        
-        # 序列化
-        serializer = AtcTurnSerializer(turns, many=True)
-        return self.success_response(
-            data=serializer.data,
-            message='查询成功'
-        )
-
-
-class AtcScenarioSearchView(APIView, ResponseMixin):
-    """
-    ATC场景搜索视图
-    
-    GET /api/atc/scenario/search/
-    Query参数:
-        - q: 搜索关键词（必需）
-        - page: 页码（可选）
-        - page_size: 每页数量（可选）
-    
-    在场景的标题和描述中搜索
-    """
-    permission_classes = [AllowAny]
-    
-    def get(self, request):
-        query = request.query_params.get('q', '').strip()
-        
-        if not query:
-            return self.bad_request_response(
-                message='搜索关键词不能为空'
-            )
-        
-        # 搜索
-        queryset = AtcScenario.objects.select_related('airport', 'module').filter(
-            Q(title__icontains=query) |
-            Q(description__icontains=query) |
-            Q(airport__name__icontains=query) |
-            Q(airport__icao__icontains=query)
-        ).distinct()
-        
-        # 分页
-        paginator = AtcPagination()
-        page = paginator.paginate_queryset(queryset, request)
-        
-        if page is not None:
-            serializer = AtcScenarioListSerializer(page, many=True)
-            result = paginator.get_paginated_response(serializer.data)
-            return self.success_response(
-                data=result.data,
-                message=f'搜索到 {queryset.count()} 条结果'
-            )
-        
-        # 不分页
-        serializer = AtcScenarioListSerializer(queryset, many=True)
-        return self.success_response(
-            data=serializer.data,
-            message=f'搜索到 {queryset.count()} 条结果'
-        )

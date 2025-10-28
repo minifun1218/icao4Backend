@@ -88,14 +88,14 @@ class AtcScenario(models.Model):
         verbose_name="机场"
     )
 
-    # 模块ID
-    module = models.ForeignKey(
+    # 模块ID（可选）
+    module = models.ManyToManyField(
         to='exam.ExamModule',
-        on_delete=models.PROTECT,
         related_name='atc_scenarios',
-        verbose_name="关联模块"
+        blank=True,
+        verbose_name="关联模块",
+        help_text="可选：选择该场景所属的试题模块（可多选），也可以不选择任何模块"
     )
-
 
     # 场景标题
     title = models.CharField(
@@ -104,12 +104,13 @@ class AtcScenario(models.Model):
         verbose_name="场景标题"
     )
 
-    # 场景描述
-    description = models.TextField(
-        max_length=2000,
+    # 场景描述（键值对格式）
+    description = models.JSONField(
         null=True,
         blank=True,
-        verbose_name="场景描述"
+        default=dict,
+        verbose_name="场景描述",
+        help_text='JSON格式的场景描述，例如：{"situation": "紧急情况", "weather": "晴天", "traffic": "繁忙"}'
     )
 
 
@@ -151,20 +152,22 @@ class AtcTurn(models.Model):
     ]
 
 
-    # 场景ID (外键关联atc_scenarios表)
+    # 场景ID (外键关联atc_scenarios表) - 多对一关系
     scenario = models.ForeignKey(
         'AtcScenario',
-        on_delete=models.CASCADE, # 轮次依赖于场景，场景删除时轮次也应删除
-        related_name='turns',
-        null=False,
-        verbose_name="关联场景"
+        on_delete=models.CASCADE,
+        related_name='atc_turns',
+        verbose_name="关联场景",
+        help_text="选择该轮次所属的场景"
     )
 
     # 轮次序号
     turn_number = models.IntegerField(
         validators=[MinValueValidator(1, message="轮次序号必须大于0")],
         null=False,
-        verbose_name="轮次序号"
+        default=1,
+        verbose_name="轮次序号",
+        help_text="指定该轮次在对话中的顺序（第1轮、第2轮等）"
     )
 
     # 说话者类型（pilot/controller）
@@ -201,17 +204,22 @@ class AtcTurn(models.Model):
         verbose_name="更新时间"
     )
 
+
+
     # 关联的回答记录
     class Meta:
         db_table = 'atc_turns'
         verbose_name = 'ATC轮次'
         verbose_name_plural = 'ATC轮次'
-        unique_together = ('scenario', 'turn_number',) # 场景和轮次序号组合唯一
+        # 场景和轮次序号组合唯一
+        unique_together = ('scenario', 'turn_number',)
         ordering = ['scenario', 'turn_number']
 
 
     def __str__(self):
-        return f"场景{self.scenario_id} - 轮次{self.turn_number} ({self.get_speaker_type_display()})"
+        if self.scenario:
+            return f"{self.scenario.title} - 轮次{self.turn_number} ({self.get_speaker_type_display()})"
+        return f"轮次{self.turn_number} ({self.get_speaker_type_display()})"
 
 class AtcTurnResponse(models.Model):
     MODE_CHOICES = [

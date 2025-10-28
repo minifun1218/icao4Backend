@@ -10,15 +10,12 @@ class LsaDialog(models.Model):
     听力简答对话实体类
     对应数据库表：lsa_dialogs
     """
-
-    # 主键ID
-    id = models.AutoField(primary_key=True)
-
-    # 关联考试模块 (ManyToOne)
+    # 关联考试模块 (ManyToMany) - 可选
     exam_module = models.ManyToManyField(
         to='exam.ExamModule',
         related_name='module_lsa',
         db_column='module_id',
+        blank=True,
         verbose_name='关联考试模块'
     )
 
@@ -39,9 +36,7 @@ class LsaDialog(models.Model):
         verbose_name='对话音频资源'
     )
 
-    # 显示顺序
-    display_order = models.IntegerField(null=False)
-
+    display_order = models.BigIntegerField(default=0, null=True,)
     # 是否激活
     is_active = models.BooleanField(default=True, null=False)
 
@@ -53,8 +48,8 @@ class LsaDialog(models.Model):
 
     class Meta:
         db_table = 'lsa_dialogs'
-        verbose_name = '听力理解对话'
-        verbose_name_plural = '听力理解对话'
+        verbose_name = '听力简答对话'
+        verbose_name_plural = '听力简答对话'
 
     def __str__(self):
         return self.title
@@ -65,46 +60,53 @@ class LsaQuestion(models.Model):
     对应数据库表：lsa_questions
     """
 
-    # 对话ID (ManyToOne)
-    dialog = models.ForeignKey(
+    # 对话ID (ManyToMany)
+    dialog = models.ManyToManyField(
         'LsaDialog',
-        on_delete=models.CASCADE,
         db_column='dialog_id',
-        related_name='questions',
-        verbose_name='关联对话'
+        related_name='lsa_questions',
+        blank=True,
+        verbose_name='关联对话',
+        help_text='可选择该问题所属的对话（可多选）'
     )
 
-    # 问题类型
-    question_type = models.CharField(max_length=50, null=False)
 
     # 问题文本
-    question_text = models.CharField(max_length=2000, null=False)
+    question_text = models.CharField(
+        max_length=2000, 
+        null=False,
+        verbose_name='题目文本',
+        help_text='输入题目内容'
+    )
 
-    # 选项A, B, C, D
-    option_a = models.CharField(max_length=500, null=True, blank=True)
-    option_b = models.CharField(max_length=500, null=True, blank=True)
-    option_c = models.CharField(max_length=500, null=True, blank=True)
-    option_d = models.CharField(max_length=500, null=True, blank=True)
-
-    # 正确答案
-    correct_answer = models.CharField(max_length=10, null=True, blank=True)
-
-    # 答案解析
-    answer_explanation = models.CharField(max_length=1000, null=True, blank=True)
-
+    # 问题音频资源
+    question_audio = models.ForeignKey(
+        'media.MediaAsset',
+        on_delete=models.SET_NULL,
+        db_column='question_audio_id',
+        null=True,
+        blank=True,
+        related_name='lsa_questions_audio',
+        verbose_name='问题音频',
+        help_text='上传问题音频文件'
+    )
 
     # 显示顺序
     display_order = models.IntegerField(
-        null=True, # 字段本身允许null
+        null=True,
         blank=True,
-        validators=[MinValueValidator(1)]
+        validators=[MinValueValidator(1)],
+        verbose_name='显示顺序',
+        help_text='数字越小越靠前'
     )
 
-
-
-
     # 是否激活
-    is_active = models.BooleanField(default=True, null=False)
+    is_active = models.BooleanField(
+        default=True, 
+        null=False,
+        verbose_name='是否激活',
+        help_text='取消激活后该题目将不会显示'
+    )
 
     # 创建时间
     created_at = models.DateTimeField(auto_now_add=True, editable=False)
@@ -114,8 +116,8 @@ class LsaQuestion(models.Model):
 
     class Meta:
         db_table = 'lsa_questions'
-        verbose_name = '听力理解问题'
-        verbose_name_plural = '听力理解问题'
+        verbose_name = '听力简答问题'
+        verbose_name_plural = '听力简答问题'
 
 
     def __str__(self):
@@ -144,10 +146,9 @@ class LsaResponse(models.Model):
         'LsaQuestion',
         on_delete=models.CASCADE,
         db_column='question_id',
-        related_name='responses',
+        related_name='lsa_responses',
         verbose_name='关联题目'
     )
-
 
 
     # 外键：学生作答录音ID (ManyToOne)
@@ -157,7 +158,7 @@ class LsaResponse(models.Model):
         db_column='answer_audio_id',
         null=True,
         blank=True,
-        related_name='responses',
+        related_name='lsa_responses_audio',
         verbose_name='回答音频资源'
     )
 
@@ -182,14 +183,13 @@ class LsaResponse(models.Model):
     # 作答时间点 (Java @PrePersist 逻辑，此处设置 default)
     answered_at = models.DateTimeField(default=timezone.now, null=False)
 
-
     # 创建时间
     created_at = models.DateTimeField(auto_now_add=True, editable=False)
 
     class Meta:
         db_table = 'lsa_responses'
-        verbose_name = '口语作答'
-        verbose_name_plural = '口语作答'
+        verbose_name = '听力简单作答'
+        verbose_name_plural = '听力简单作答'
 
 
     def __str__(self):

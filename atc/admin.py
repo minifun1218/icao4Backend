@@ -4,6 +4,7 @@ ATC Admin 配置
 from django.contrib import admin
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
+from django import forms
 from .models import Airport, AtcScenario, AtcTurn, AtcTurnResponse
 
 
@@ -63,6 +64,268 @@ class AtcTurnInline(admin.TabularInline):
     extra = 1
     fields = ['turn_number', 'speaker_type', 'audio', 'is_active']
     ordering = ['turn_number']
+    verbose_name = 'ATC轮次'
+    verbose_name_plural = 'ATC轮次'
+
+
+class KeyValueWidget(forms.Widget):
+    """键值对编辑器控件"""
+    template_name = 'admin/atc/key_value_widget.html'
+    
+    def __init__(self, attrs=None):
+        super().__init__(attrs)
+        if attrs is None:
+            attrs = {}
+        attrs['class'] = attrs.get('class', '') + ' key-value-widget'
+        self.attrs = attrs
+    
+    def render(self, name, value, attrs=None, renderer=None):
+        """渲染键值对编辑器"""
+        import json
+        
+        # 解析JSON数据
+        data = {}
+        if value is not None:
+            if isinstance(value, str):
+                try:
+                    data = json.loads(value)
+                    if not isinstance(data, dict):
+                        data = {}
+                except:
+                    data = {}
+            elif isinstance(value, dict):
+                data = value
+            else:
+                data = {}
+        
+        # 构建HTML
+        html = f'''
+        <div class="key-value-editor" data-name="{name}">
+            <input type="hidden" name="{name}" id="id_{name}" value='{json.dumps(data, ensure_ascii=False)}'>
+            <div class="key-value-pairs" id="key-value-pairs-{name}">
+        '''
+        
+        # 添加现有的键值对
+        if data:
+            for key, val in data.items():
+                # HTML转义，防止XSS攻击
+                safe_key = str(key).replace('"', '&quot;').replace("'", '&#39;')
+                safe_val = str(val).replace('"', '&quot;').replace("'", '&#39;')
+                html += f'''
+                <div class="key-value-pair">
+                    <input type="text" class="kv-key" value="{safe_key}" placeholder="键">
+                    <input type="text" class="kv-value" value="{safe_val}" placeholder="值">
+                    <button type="button" class="btn-remove" onclick="removeKeyValuePair(this)">删除</button>
+                </div>
+                '''
+        
+        html += '''
+            </div>
+            <button type="button" class="btn-add" onclick="addKeyValuePair(this)">➕ 添加键值对</button>
+        </div>
+        
+        <style>
+            .key-value-editor {
+                margin: 10px 0;
+                padding: 15px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                background: #f9f9f9;
+            }
+            .key-value-pairs {
+                margin-bottom: 10px;
+            }
+            .key-value-pair {
+                display: flex;
+                gap: 10px;
+                margin-bottom: 8px;
+                align-items: center;
+            }
+            .key-value-pair .kv-key {
+                flex: 0 0 200px;
+                padding: 6px 10px;
+                border: 1px solid #ccc;
+                border-radius: 3px;
+            }
+            .key-value-pair .kv-value {
+                flex: 1;
+                padding: 6px 10px;
+                border: 1px solid #ccc;
+                border-radius: 3px;
+            }
+            .key-value-pair .btn-remove {
+                padding: 6px 12px;
+                background: #dc3545;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                cursor: pointer;
+            }
+            .key-value-pair .btn-remove:hover {
+                background: #c82333;
+            }
+            .btn-add {
+                padding: 8px 16px;
+                background: #28a745;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                cursor: pointer;
+                font-size: 14px;
+            }
+            .btn-add:hover {
+                background: #218838;
+            }
+        </style>
+        
+        <script>
+            function addKeyValuePair(button) {
+                const editor = button.closest('.key-value-editor');
+                const container = editor.querySelector('.key-value-pairs');
+                const name = editor.dataset.name;
+                
+                const pairDiv = document.createElement('div');
+                pairDiv.className = 'key-value-pair';
+                pairDiv.innerHTML = `
+                    <input type="text" class="kv-key" placeholder="键">
+                    <input type="text" class="kv-value" placeholder="值">
+                    <button type="button" class="btn-remove" onclick="removeKeyValuePair(this)">删除</button>
+                `;
+                
+                container.appendChild(pairDiv);
+                updateHiddenInput(editor, name);
+                
+                // 为新输入框添加变化监听
+                pairDiv.querySelectorAll('input').forEach(input => {
+                    input.addEventListener('input', () => updateHiddenInput(editor, name));
+                });
+            }
+            
+            function removeKeyValuePair(button) {
+                const editor = button.closest('.key-value-editor');
+                const name = editor.dataset.name;
+                button.closest('.key-value-pair').remove();
+                updateHiddenInput(editor, name);
+            }
+            
+            function updateHiddenInput(editor, name) {
+                const pairs = editor.querySelectorAll('.key-value-pair');
+                const data = {};
+                
+                pairs.forEach(pair => {
+                    const key = pair.querySelector('.kv-key').value.trim();
+                    const value = pair.querySelector('.kv-value').value.trim();
+                    if (key) {
+                        data[key] = value;
+                    }
+                });
+                
+                const hiddenInput = editor.querySelector('input[type="hidden"]');
+                hiddenInput.value = JSON.stringify(data);
+            }
+            
+            // 为所有键值对输入框添加变化监听
+            document.addEventListener('DOMContentLoaded', function() {
+                document.querySelectorAll('.key-value-editor').forEach(editor => {
+                    const name = editor.dataset.name;
+                    editor.querySelectorAll('input.kv-key, input.kv-value').forEach(input => {
+                        input.addEventListener('input', () => updateHiddenInput(editor, name));
+                    });
+                });
+            });
+        </script>
+        '''
+        
+        return mark_safe(html)
+    
+    def value_from_datadict(self, data, files, name):
+        """从表单数据中获取值"""
+        import json
+        value = data.get(name)
+        
+        if not value:
+            return {}
+        
+        # 如果已经是字典，直接返回
+        if isinstance(value, dict):
+            return value
+        
+        # 如果是字符串，尝试解析为JSON
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                # 确保解析结果是字典
+                if isinstance(parsed, dict):
+                    return parsed
+                else:
+                    return {}
+            except (json.JSONDecodeError, ValueError, TypeError):
+                return {}
+        
+        return {}
+
+
+class KeyValueField(forms.Field):
+    """自定义键值对字段"""
+    widget = KeyValueWidget
+    
+    def __init__(self, **kwargs):
+        kwargs.setdefault('required', False)
+        super().__init__(**kwargs)
+        self.widget = KeyValueWidget()
+    
+    def to_python(self, value):
+        """将输入值转换为Python对象"""
+        if value in self.empty_values:
+            return {}
+        
+        if isinstance(value, dict):
+            return value
+        
+        if isinstance(value, str):
+            import json
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, dict):
+                    return parsed
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
+        
+        return {}
+    
+    def prepare_value(self, value):
+        """准备显示的值"""
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            import json
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, dict):
+                    return parsed
+            except:
+                pass
+        return {}
+    
+    def bound_data(self, data, initial):
+        """处理绑定数据 - 这个方法很重要，避免Django尝试解析JSON"""
+        if data is None:
+            return initial
+        return data
+
+
+class AtcScenarioAdminForm(forms.ModelForm):
+    """ATC场景管理表单"""
+    description = KeyValueField(
+        label='场景描述',
+        help_text='使用下方的键值对编辑器添加场景描述信息'
+    )
+    
+    class Meta:
+        model = AtcScenario
+        fields = '__all__'
 
 
 @admin.register(AtcScenario)
@@ -70,47 +333,84 @@ class AtcScenarioAdmin(admin.ModelAdmin):
     """
     ATC场景后台管理
     """
+    form = AtcScenarioAdminForm
+    
     list_display = [
         'id',
         'title',
         'airport',
-        'module',
+        'module_display',
+        'description_preview',
         'is_active',
         'turn_count',
         'created_at'
     ]
     list_filter = ['is_active', 'airport', 'module', 'created_at']
-    search_fields = ['title', 'description', 'airport__name', 'airport__icao']
+    search_fields = ['title', 'airport__name', 'airport__icao']
     ordering = ['-created_at']
     
     fieldsets = (
         ('基本信息', {
-            'fields': ('title', 'description'),
+            'fields': ('title', 'description', 'airport', 'is_active', 'created_at', 'updated_at'),
             'description': '💡 提示：场景的基本信息'
         }),
-        ('关联信息', {
-            'fields': ('airport', 'module')
+        ('关联试题模块（可选）', {
+            'fields': ('module',),
+            'description': '💡 可选：选择该场景所属的试题模块（可多选），也可以不选择任何模块'
         }),
-        ('配置信息', {
-            'fields': ('is_active',)
-        }),
-        ('时间信息', {
-            'fields': ('created_at', 'updated_at'),
-            'classes': ('collapse',)
-        }),
+
     )
     
     readonly_fields = ['created_at', 'updated_at']
     
+    filter_horizontal = ['module']
+    
     inlines = [AtcTurnInline]
+    
+    def formfield_for_manytomany(self, db_field, request, **kwargs):
+        """自定义多对多字段的查询集，只显示 ATC 类型的考试模块"""
+        if db_field.name == "module":
+            kwargs["queryset"] = db_field.related_model.objects.filter(
+                module_type='ATC',
+                is_activate=True
+            ).order_by('display_order', 'created_at')
+        return super().formfield_for_manytomany(db_field, request, **kwargs)
+    
+    def description_preview(self, obj):
+        """显示场景描述预览"""
+        if obj.description:
+            import json
+            try:
+                # 格式化显示前3个键值对
+                items = list(obj.description.items())[:3]
+                preview = ', '.join([f'{k}: {v}' for k, v in items])
+                if len(obj.description) > 3:
+                    preview += f' ... (+{len(obj.description) - 3}项)'
+                return format_html('<span style="color: #666; font-size: 12px;">{}</span>', preview)
+            except:
+                return format_html('<span style="color: #999;">JSON格式</span>')
+        return format_html('<span style="color: #999;">-</span>')
+    description_preview.short_description = '场景描述'
+    
+    def module_display(self, obj):
+        """显示关联的模块"""
+        modules = obj.module.all()
+        if modules.exists():
+            module_names = [m.title or m.get_module_type_display() for m in modules[:3]]
+            result = ', '.join(module_names)
+            if modules.count() > 3:
+                result += f' 等{modules.count()}个'
+            return result
+        return format_html('<span style="color: #999;">未关联模块</span>')
+    module_display.short_description = '关联模块'
     
     def turn_count(self, obj):
         """显示轮次数量"""
-        count = obj.turns.filter(is_active=True).count()
+        count = obj.atc_turns.filter(is_active=True).count()
         if count > 0:
             return format_html(
-                '<a href="/admin/atc/atcturn/?scenario__id__exact={}" style="color: #17a2b8;">{} 个轮次</a>',
-                obj.id, count
+                '<span style="color: #17a2b8; font-weight: bold;">{} 个轮次</span>',
+                count
             )
         return '0 个轮次'
     turn_count.short_description = '轮次数量'
@@ -137,21 +437,21 @@ class AtcTurnAdmin(admin.ModelAdmin):
     
     fieldsets = (
         ('基本信息', {
-            'fields': ('scenario', 'turn_number', 'speaker_type')
-        }),
-        ('音频信息', {
-            'fields': ('audio', 'audio_player_display')
-        }),
-        ('配置信息', {
-            'fields': ('is_active',)
-        }),
-        ('时间信息', {
-            'fields': ('created_at', 'updated_at'),
-            'classes': ('collapse',)
+            'fields': ('scenario', 'turn_number', 'audio', 'audio_player_display','speaker_type','is_active','created_at', 'updated_at'),
+            'description': '💡 选择场景、设置轮次序号和说话者类型'
         }),
     )
     
     readonly_fields = ['created_at', 'updated_at', 'audio_player_display']
+    
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        """自定义外键字段的查询集"""
+        if db_field.name == "scenario":
+            # 只显示激活的ATC场景
+            kwargs["queryset"] = db_field.related_model.objects.filter(
+                is_active=True
+            ).order_by('airport__name', 'title')
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
     
     def speaker_type_display(self, obj):
         """显示说话者类型（带图标）"""
@@ -272,9 +572,11 @@ class AtcTurnResponseAdmin(admin.ModelAdmin):
     
     def turn_short(self, obj):
         """显示轮次缩略"""
-        if obj.atc_turn and obj.atc_turn.scenario:
+        if obj.atc_turn:
             speaker = '👨‍✈️' if obj.atc_turn.speaker_type == 'pilot' else '🗼'
-            return f'{speaker} {obj.atc_turn.scenario.title} - T{obj.atc_turn.turn_number}'
+            if obj.atc_turn.scenario:
+                return f'{speaker} {obj.atc_turn.scenario.title} - T{obj.atc_turn.turn_number}'
+            return f'{speaker} T{obj.atc_turn.turn_number}'
         return '-'
     turn_short.short_description = '轮次'
     

@@ -79,7 +79,7 @@ class OpiQuestionsView(APIView, ResponseMixin):
             try:
                 module = ExamModule.objects.get(
                     id=module_id,
-                    module_type='SPEAKING_OPI',
+                    module_type='OPI',
                     is_activate=True
                 )
             except ExamModule.DoesNotExist:
@@ -87,7 +87,7 @@ class OpiQuestionsView(APIView, ResponseMixin):
         elif mode == 'random':
             # 随机选择一个模块
             modules = ExamModule.objects.filter(
-                module_type='SPEAKING_OPI',
+                module_type='OPI',
                 is_activate=True
             )
             
@@ -200,10 +200,10 @@ class OpiQuestionsAllView(APIView, ResponseMixin):
         
         # 获取所有口语面试类型的模块
         modules = ExamModule.objects.filter(
-            module_type='SPEAKING_OPI',
+            module_type='OPI',
             is_activate=True
         ).prefetch_related('opi_topic__questions__prompt_audio').order_by('display_order', 'id')
-        
+        print(modules)
         modules_data = []
         total_questions = 0
         total_answered = 0
@@ -310,11 +310,23 @@ class OpiSubmitAnswerView(APIView, ResponseMixin):
     
     POST /api/opi/submit/
     
-    请求体：
+    请求体（支持两种方式）：
+    方式1 - 直接上传音频文件（multipart/form-data）：
     {
         "question_id": 1,
-        "answer_audio_id": 2,  // 可选
+        "answer_audio_file": <file>,  // 上传的音频文件
         "mode_type": "practice",  // practice 或 exam
+        "module_id": 1,  // 可选，模块ID
+        "is_timeout": false,
+        "score": 85.5  // 可选
+    }
+    
+    方式2 - 提供音频资源ID（application/json）：
+    {
+        "question_id": 1,
+        "answer_audio_id": 2,  // 已存在的音频资源ID
+        "mode_type": "practice",
+        "module_id": 1,  // 可选
         "is_timeout": false,
         "score": 85.5  // 可选
     }
@@ -322,6 +334,7 @@ class OpiSubmitAnswerView(APIView, ResponseMixin):
     返回：
     {
         "response_id": 123,
+        "audio_id": 456,  // 新创建的音频资源ID（如果上传了文件）
         "message": "答题记录已保存"
     }
     """
@@ -329,9 +342,11 @@ class OpiSubmitAnswerView(APIView, ResponseMixin):
     
     def post(self, request):
         user = request.user
+        print(request.data)
+        
         question_id = request.data.get('question_id')
-        answer_audio_id = request.data.get('answer_audio_id')
         mode_type = request.data.get('mode_type', 'practice')
+        module_id = request.data.get('module_id')
         is_timeout = request.data.get('is_timeout', False)
         score = request.data.get('score')
         
@@ -344,14 +359,43 @@ class OpiSubmitAnswerView(APIView, ResponseMixin):
         except OpiQuestion.DoesNotExist:
             return self.error_response(message='题目不存在')
         
-        # 获取答题音频（如果提供）
+        # 处理音频资源（支持两种方式）
         answer_audio = None
-        if answer_audio_id:
+        audio_id = None
+        
+        # 方式1：前端上传音频文件
+        answer_audio_file = request.FILES.get('answer_audio_file')
+        if answer_audio_file:
             from media.models import MediaAsset
-            try:
-                answer_audio = MediaAsset.objects.get(id=answer_audio_id)
-            except MediaAsset.DoesNotExist:
-                return self.error_response(message='音频资源不存在')
+            import re
+            
+            # 从文件名中提取时长信息（如果有）
+            # 文件名格式：xxxxx.durationTime=16956.mp3 或 xxxxx.durationTime16956.mp3
+            duration_ms = None
+            filename = answer_audio_file.name
+            duration_match = re.search(r'durationTime[=_]?(\d+)', filename)
+            if duration_match:
+                duration_ms = int(duration_match.group(1))
+            
+            # 创建音频资源
+            answer_audio = MediaAsset.objects.create(
+                media_type='audio',
+                file=answer_audio_file,
+                duration_ms=duration_ms,
+                description=f'OPI答题录音 - 用户{user.id} - 题目{question_id}'
+            )
+            audio_id = answer_audio.id
+        
+        # 方式2：前端提供已存在的音频资源ID
+        else:
+            answer_audio_id = request.data.get('answer_audio_id')
+            if answer_audio_id:
+                from media.models import MediaAsset
+                try:
+                    answer_audio = MediaAsset.objects.get(id=answer_audio_id)
+                    audio_id = answer_audio.id
+                except MediaAsset.DoesNotExist:
+                    return self.error_response(message='音频资源不存在')
         
         # 创建答题记录
         response = OpiResponse.objects.create(
@@ -363,9 +407,18 @@ class OpiSubmitAnswerView(APIView, ResponseMixin):
             score=score
         )
         
+        # 如果提供了模块ID，关联到该模块
+        if module_id:
+            try:
+                module = ExamModule.objects.get(id=module_id)
+                response.modules.add(module)
+            except ExamModule.DoesNotExist:
+                pass  # 模块不存在，继续处理，不影响主流程
+        
         return self.success_response(
             data={
                 'response_id': response.id,
+                'audio_id': audio_id,
                 'is_timeout': is_timeout,
                 'score': float(score) if score else None
             },

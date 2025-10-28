@@ -9,24 +9,31 @@ class LsaQuestionSerializer(serializers.ModelSerializer):
     """
     LSA问题序列化器
     """
+    question_audio_info = serializers.SerializerMethodField()
+    
     class Meta:
         model = LsaQuestion
         fields = [
             'id',
-            'question_type',
             'question_text',
-            'option_a',
-            'option_b',
-            'option_c',
-            'option_d',
-            'correct_answer',
-            'answer_explanation',
+            'question_audio',
+            'question_audio_info',
             'display_order',
             'is_active',
             'created_at',
             'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def get_question_audio_info(self, obj):
+        """获取问题音频信息"""
+        if obj.question_audio:
+            return {
+                'id': obj.question_audio.id,
+                'uri': obj.question_audio.uri,
+                'duration_ms': obj.question_audio.duration_ms
+            }
+        return None
 
 
 class LsaDialogSerializer(serializers.ModelSerializer):
@@ -54,7 +61,7 @@ class LsaDialogSerializer(serializers.ModelSerializer):
     
     def get_question_count(self, obj):
         """获取问题数量"""
-        return obj.questions.filter(is_active=True).count()
+        return obj.lsa_questions.filter(is_active=True).count()
     
     def get_audio_info(self, obj):
         """获取音频信息"""
@@ -78,7 +85,7 @@ class LsaDialogDetailSerializer(LsaDialogSerializer):
     
     def get_questions(self, obj):
         """获取所有问题"""
-        questions = obj.questions.filter(is_active=True).order_by('display_order')
+        questions = obj.lsa_questions.filter(is_active=True).order_by('display_order')
         return LsaQuestionSerializer(questions, many=True).data
 
 

@@ -19,16 +19,16 @@ class OpiTopic(models.Model):
     )
 
     # 话题顺序（与 module_id 联合唯一）
-    order = models.IntegerField(null=False, db_column='t_order')
+    order = models.IntegerField(null=False, db_column='t_order', verbose_name='顺序')
 
     # 话题标题
-    title = models.CharField(max_length=200, null=False)
+    title = models.CharField(max_length=200, null=False, verbose_name='标题')
 
     # 话题描述（可选）
-    description = models.TextField(null=True, blank=True)
+    description = models.TextField(null=True, blank=True, verbose_name='描述')
 
     # 创建时间
-    created_at = models.DateTimeField(auto_now_add=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True, editable=False, verbose_name='创建时间')
 
     class Meta:
         db_table = 'opi_topics'
@@ -60,7 +60,8 @@ class OpiQuestion(models.Model):
     QOrder = models.IntegerField(
         null=False,
         db_column='q_order',
-        validators=[MinValueValidator(1, message="问题顺序必须大于0")]
+        validators=[MinValueValidator(1, message="问题顺序必须大于0")],
+        verbose_name='问题顺序'
     )
 
     # 预录提问音频ID (ManyToOne)

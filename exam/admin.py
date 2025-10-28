@@ -197,6 +197,14 @@ class ExamModuleAdminForm(forms.ModelForm):
         help_text='选择要包含在此模块中的OPI话题'
     )
     
+    atc_scenarios = forms.ModelMultipleChoiceField(
+        queryset=None,
+        required=False,
+        widget=admin.widgets.FilteredSelectMultiple('ATC场景', False),
+        label='ATC场景',
+        help_text='选择要包含在此模块中的ATC场景'
+    )
+    
     class Meta:
         model = ExamModule
         fields = '__all__'
@@ -209,12 +217,14 @@ class ExamModuleAdminForm(forms.ModelForm):
         from story.models import RetellItem
         from lsa.models import LsaDialog
         from opi.models import OpiTopic
+        from atc.models import AtcScenario
         
         # 设置 queryset
         self.fields['mcq_materials'].queryset = McqMaterial.objects.filter(is_enabled=True).order_by('display_order', 'title')
         self.fields['retell_items'].queryset = RetellItem.objects.all()
         self.fields['lsa_dialogs'].queryset = LsaDialog.objects.filter(is_active=True).order_by('display_order', 'title')
         self.fields['opi_topics'].queryset = OpiTopic.objects.all().order_by('order', 'title')
+        self.fields['atc_scenarios'].queryset = AtcScenario.objects.filter(is_active=True).order_by('-created_at')
         
         # 如果是编辑现有对象，设置初始值
         if self.instance and self.instance.pk:
@@ -224,6 +234,7 @@ class ExamModuleAdminForm(forms.ModelForm):
             self.fields['retell_items'].initial = self.instance.retell_items.all()
             self.fields['lsa_dialogs'].initial = self.instance.module_lsa.all()
             self.fields['opi_topics'].initial = self.instance.opi_topic.all()
+            self.fields['atc_scenarios'].initial = self.instance.atc_scenarios.all()
     
     def save(self, commit=True):
         instance = super().save(commit=False)
@@ -259,6 +270,19 @@ class ExamModuleAdminForm(forms.ModelForm):
             # 更新 OPI 话题
             if 'opi_topics' in self.cleaned_data:
                 instance.opi_topic.set(self.cleaned_data['opi_topics'])
+            
+            # 更新 ATC 场景
+            if 'atc_scenarios' in self.cleaned_data:
+                selected_scenarios = self.cleaned_data['atc_scenarios']
+                
+                # 清除当前模块在所有场景上的关联
+                from atc.models import AtcScenario
+                for scenario in AtcScenario.objects.filter(module=instance):
+                    scenario.module.remove(instance)
+                
+                # 为选中的场景添加当前模块的关联
+                for scenario in selected_scenarios:
+                    scenario.module.add(instance)
         
         return instance
 
@@ -336,10 +360,10 @@ class ExamModuleAdmin(admin.ModelAdmin):
                 )
             elif module_type == 'ATC_SIM':
                 base_fieldsets.append(
-                    ('ATC场景管理', {
-                        'fields': ('atc_info_display',),
+                    ('选择ATC场景', {
+                        'fields': ('atc_scenarios',),
                         'classes': ('wide',),
-                        'description': 'ATC场景使用一对多关系，请在ATC场景管理中选择此模块'
+                        'description': '从题库中选择要包含在此模块中的ATC场景（可多选）'
                     })
                 )
             
@@ -368,51 +392,7 @@ class ExamModuleAdmin(admin.ModelAdmin):
         """动态设置只读字段"""
         readonly = ['created_at', 'questions_display']
         
-        # ATC场景是一对多关系，使用只读显示
-        if obj and obj.module_type == 'ATC_SIM':
-            readonly.append('atc_info_display')
-        
         return readonly
-    
-    
-    def atc_info_display(self, obj):
-        """ATC场景信息显示"""
-        scenarios = obj.atc_scenarios.all()
-        count = scenarios.count()
-        
-        html = f'''
-        <div style="padding: 15px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
-            <p style="margin: 0 0 10px 0;"><strong>⚠️ ATC场景使用一对多关系</strong></p>
-            <p style="margin: 0 0 10px 0;">当前已关联 <strong>{count}</strong> 个ATC场景</p>
-        '''
-        
-        if count > 0:
-            html += '<ul style="margin: 10px 0; padding-left: 20px;">'
-            for scenario in scenarios[:10]:
-                html += f'<li><a href="/admin/atc/atcscenario/{scenario.id}/change/" target="_blank">{scenario.title}</a> (ID: {scenario.id})</li>'
-            if count > 10:
-                html += f'<li style="color: #666;">... 还有 {count - 10} 个场景</li>'
-            html += '</ul>'
-        
-        html += '''
-            <div style="margin-top: 15px;">
-                <a href="/admin/atc/atcscenario/add/" target="_blank" 
-                   style="display: inline-block; padding: 8px 16px; background: #28a745; color: white; text-decoration: none; border-radius: 4px; margin-right: 10px;">
-                    ➕ 创建新ATC场景
-                </a>
-                <a href="/admin/atc/atcscenario/" target="_blank" 
-                   style="display: inline-block; padding: 8px 16px; background: #007bff; color: white; text-decoration: none; border-radius: 4px;">
-                    📋 管理所有ATC场景
-                </a>
-            </div>
-            <p style="margin: 15px 0 0 0; color: #856404; font-size: 12px;">
-                💡 在创建或编辑ATC场景时，选择"关联模块"字段为当前模块即可将场景添加到此模块
-            </p>
-        </div>
-        '''
-        
-        return mark_safe(html)
-    atc_info_display.short_description = 'ATC场景'
     
     filter_horizontal = ['exam_paper']
     
@@ -722,7 +702,7 @@ class ExamModuleAdmin(admin.ModelAdmin):
             html += '</tr></thead><tbody>'
             
             for scenario in scenarios[:20]:
-                turn_count = scenario.turns.filter(is_active=True).count()
+                turn_count = scenario.atc_turns.filter(is_active=True).count()
                 airport_name = scenario.airport.name if scenario.airport else '-'
                 status = '启用' if scenario.is_active else '禁用'
                 status_color = '#28a745' if scenario.is_active else '#dc3545'

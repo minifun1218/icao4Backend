@@ -103,7 +103,7 @@ class LsaQuestionsView(APIView, ResponseMixin):
         
         # 获取模块的所有对话
         dialogs = module.module_lsa.filter(is_active=True).prefetch_related(
-            'questions'
+            'lsa_questions'
         ).order_by('display_order')
         
         # 序列化对话和题目数据
@@ -112,7 +112,7 @@ class LsaQuestionsView(APIView, ResponseMixin):
         
         for dialog in dialogs:
             # 获取该对话的所有激活问题
-            questions = dialog.questions.filter(is_active=True).order_by('display_order')
+            questions = dialog.lsa_questions.filter(is_active=True).order_by('display_order')
             question_count = questions.count()
             total_questions += question_count
             
@@ -136,14 +136,20 @@ class LsaQuestionsView(APIView, ResponseMixin):
                         question=question
                     ).exists()
                 
+                # 序列化问题音频信息
+                question_audio_info = None
+                if question.question_audio:
+                    question_audio_info = {
+                        'id': question.question_audio.id,
+                        'uri': question.question_audio.uri,
+                        'duration_ms': question.question_audio.duration_ms
+                    }
+                
                 questions_data.append({
                     'id': question.id,
-                    'question_type': question.question_type,
                     'question_text': question.question_text,
-                    'option_a': question.option_a,
-                    'option_b': question.option_b,
-                    'option_c': question.option_c,
-                    'option_d': question.option_d,
+                    'question_audio': question.question_audio_id if question.question_audio else None,
+                    'question_audio_info': question_audio_info,
                     'display_order': question.display_order,
                     'is_answered': is_answered if user.is_authenticated else None
                 })
@@ -178,7 +184,7 @@ class LsaQuestionsView(APIView, ResponseMixin):
 
 class LsaQuestionsAllView(APIView, ResponseMixin):
     """
-    获取所有听力简答模块及用户答题情况
+    获取所有听力简答模块及用户答题情况（优化版）
     
     GET /api/lsa/questions/all/
     
@@ -189,10 +195,23 @@ class LsaQuestionsAllView(APIView, ResponseMixin):
             {
                 "id": 1,
                 "title": "听力简答模块1",
+                "module_type": "LISTENING_SA",
                 "question_count": 10,
                 "answered_count": 5,
                 "progress": 50.0,
-                "dialogs": [...]
+                "duration": 600000,
+                "score": 100,
+                "dialogs": [
+                    {
+                        "id": 1,
+                        "title": "对话1",
+                        "description": "...",
+                        "audio_info": {...},
+                        "question_count": 5,
+                        "questions": [...]
+Request
+                    }
+                ]
             }
         ],
         "total_modules": 3,
@@ -205,67 +224,85 @@ class LsaQuestionsAllView(APIView, ResponseMixin):
     
     def get(self, request):
         user = request.user
+        is_authenticated = user.is_authenticated
         
-        # 获取所有听力简答类型的模块
+        # 获取所有听力简答类型的模块（优化查询）
         modules = ExamModule.objects.filter(
             module_type='LISTENING_SA',
             is_activate=True
-        ).prefetch_related('module_lsa__questions').order_by('display_order', 'id')
+        ).prefetch_related(
+            'module_lsa__audio_asset',
+            'module_lsa__lsa_questions__question_audio'
+        ).order_by('display_order', 'id')
+        
+        # 如果用户已登录，批量查询用户的所有答题记录（优化性能）
+        answered_question_ids = set()
+        if is_authenticated:
+            answered_question_ids = set(
+                LsaResponse.objects.filter(user=user).values_list('question_id', flat=True)
+            )
         
         modules_data = []
         total_questions = 0
         total_answered = 0
         
-        # 检查用户是否已登录
-        is_authenticated = user.is_authenticated
-        
         for module in modules:
-            # 获取该模块关联的所有对话
+            # 获取该模块关联的所有激活对话
             dialogs = module.module_lsa.filter(is_active=True).order_by('display_order')
+            
+            if not dialogs.exists():
+                continue
             
             # 统计该模块的所有问题
             module_question_count = 0
             module_answered_count = 0
-            
             dialogs_data = []
+            
             for dialog in dialogs:
-                # 获取该对话的所有激活问题
-                questions = dialog.questions.filter(is_active=True).order_by('display_order')
+                # 获取该对话关联的所有激活问题
+                questions = dialog.lsa_questions.filter(is_active=True).order_by('display_order')
                 question_count = questions.count()
+                if question_count == 0:
+                    continue
+                
                 module_question_count += question_count
                 
-                # 序列化音频信息
+                # 序列化对话音频信息
                 audio_info = None
                 if dialog.audio_asset:
                     audio_info = {
                         'id': dialog.audio_asset.id,
                         'uri': dialog.audio_asset.uri,
-                        'duration_ms': dialog.audio_asset.duration_ms
+                        'duration_ms': dialog.audio_asset.duration_ms,
+                        'file_size': getattr(dialog.audio_asset, 'file_size', None)
                     }
                 
-                # 序列化问题
+                # 序列化问题列表
                 questions_data = []
                 for question in questions:
-                    # 如果用户登录，检查该题目是否已答
-                    is_answered = False
-                    if is_authenticated:
-                        is_answered = LsaResponse.objects.filter(
-                            user=user,
-                            question=question
-                        ).exists()
-                        if is_answered:
-                            module_answered_count += 1
+                    # 检查该题目是否已答（使用预加载的集合，避免N+1查询）
+                    is_answered = question.id in answered_question_ids
+                    if is_answered:
+                        module_answered_count += 1
+                    
+                    # 序列化问题音频信息
+                    question_audio_info = None
+                    if question.question_audio:
+                        question_audio_info = {
+                            'id': question.question_audio.id,
+                            'uri': question.question_audio.uri,
+                            'duration_ms': question.question_audio.duration_ms,
+                            'file_size': getattr(question.question_audio, 'file_size', None)
+                        }
                     
                     questions_data.append({
                         'id': question.id,
-                        'question_type': question.question_type,
                         'question_text': question.question_text,
-                        'option_a': question.option_a,
-                        'option_b': question.option_b,
-                        'option_c': question.option_c,
-                        'option_d': question.option_d,
+                        'question_audio': question.question_audio_id if question.question_audio else None,
+                        'question_audio_info': question_audio_info,
                         'display_order': question.display_order,
-                        'is_answered': is_answered if is_authenticated else None
+                        'is_answered': is_answered if is_authenticated else None,
+                        'created_at': question.created_at.isoformat() if question.created_at else None
                     })
                 
                 dialogs_data.append({
@@ -276,42 +313,47 @@ class LsaQuestionsAllView(APIView, ResponseMixin):
                     'audio_info': audio_info,
                     'display_order': dialog.display_order,
                     'question_count': question_count,
-                    'questions': questions_data
+                    'questions': questions_data,
+                    'created_at': dialog.created_at.isoformat() if dialog.created_at else None
                 })
             
+            # 跳过没有问题的模块
             if module_question_count == 0:
                 continue
             
-            # 计算进度
+            # 计算模块进度
             progress = round((module_answered_count / module_question_count * 100), 1) if module_question_count > 0 else 0
             
             modules_data.append({
                 'id': module.id,
-                'title': module.title or f'模块 {module.id}',
+                'title': module.title or f'{module.get_module_type_display()} {module.id}',
+                'module_type': module.module_type,
+                'module_type_display': module.get_module_type_display(),
                 'display_order': module.display_order or 0,
-                'dialog_count': len(dialogs_data),
-                'question_count': module_question_count,
-                'answered_count': module_answered_count,
-                'progress': progress,
                 'duration': module.duration,
                 'score': module.score,
+                'dialog_count': len(dialogs_data),
+                'question_count': module_question_count,
+                'answered_count': module_answered_count if is_authenticated else 0,
+                'progress': progress if is_authenticated else 0,
                 'dialogs': dialogs_data,
-                'created_at': module.created_at
+                'created_at': module.created_at.isoformat() if module.created_at else None
             })
             
             total_questions += module_question_count
             total_answered += module_answered_count
         
         # 计算总体进度
-        overall_progress = round((total_answered / total_questions * 100), 1) if total_questions > 0 else 0
+        overall_progress = round((total_answered / total_questions * 100), 1) if total_questions > 0 and is_authenticated else 0
         
         return self.success_response(
             data={
                 'is_authenticated': is_authenticated,
                 'modules': modules_data,
                 'total_modules': len(modules_data),
+                'total_dialogs': sum(m['dialog_count'] for m in modules_data),
                 'total_questions': total_questions,
-                'total_answered': total_answered,
+                'total_answered': total_answered if is_authenticated else 0,
                 'overall_progress': overall_progress
             },
             message='查询成功' if is_authenticated else '查询成功（未登录用户无答题记录）'
@@ -324,17 +366,29 @@ class LsaSubmitAnswerView(APIView, ResponseMixin):
     
     POST /api/lsa/submit/
     
-    请求体：
+    请求体（支持两种方式）：
+    方式1 - 直接上传音频文件（multipart/form-data）：
     {
         "question_id": 1,
-        "answer_audio_id": 2,  // 可选
+        "answer_audio_file": <file>,  // 上传的音频文件
         "mode_type": "practice",  // practice 或 exam
+        "module_id": 1,  // 可选，模块ID
+        "is_timeout": false
+    }
+    
+    方式2 - 提供音频资源ID（application/json）：
+    {
+        "question_id": 1,
+        "answer_audio_id": 2,  // 已存在的音频资源ID
+        "mode_type": "practice",
+        "module_id": 1,  // 可选
         "is_timeout": false
     }
     
     返回：
     {
         "response_id": 123,
+        "audio_id": 456,  // 新创建的音频资源ID（如果上传了文件）
         "message": "答题记录已保存"
     }
     """
@@ -342,9 +396,11 @@ class LsaSubmitAnswerView(APIView, ResponseMixin):
     
     def post(self, request):
         user = request.user
+        print(request.data)
+        
         question_id = request.data.get('question_id')
-        answer_audio_id = request.data.get('answer_audio_id')
         mode_type = request.data.get('mode_type', 'practice')
+        module_id = request.data.get('module_id')
         is_timeout = request.data.get('is_timeout', False)
         
         # 验证参数
@@ -356,14 +412,43 @@ class LsaSubmitAnswerView(APIView, ResponseMixin):
         except LsaQuestion.DoesNotExist:
             return self.error_response(message='题目不存在')
         
-        # 获取答题音频（如果提供）
+        # 处理音频资源（支持两种方式）
         answer_audio = None
-        if answer_audio_id:
+        audio_id = None
+        
+        # 方式1：前端上传音频文件
+        answer_audio_file = request.FILES.get('answer_audio_file')
+        if answer_audio_file:
             from media.models import MediaAsset
-            try:
-                answer_audio = MediaAsset.objects.get(id=answer_audio_id)
-            except MediaAsset.DoesNotExist:
-                return self.error_response(message='音频资源不存在')
+            import re
+            
+            # 从文件名中提取时长信息（如果有）
+            # 文件名格式：xxxxx.durationTime=950.mp3 或 xxxxx.durationTime950.mp3
+            duration_ms = None
+            filename = answer_audio_file.name
+            duration_match = re.search(r'durationTime[=_]?(\d+)', filename)
+            if duration_match:
+                duration_ms = int(duration_match.group(1))
+            
+            # 创建音频资源
+            answer_audio = MediaAsset.objects.create(
+                media_type='audio',
+                file=answer_audio_file,
+                duration_ms=duration_ms,
+                description=f'LSA答题录音 - 用户{user.id} - 题目{question_id}'
+            )
+            audio_id = answer_audio.id
+        
+        # 方式2：前端提供已存在的音频资源ID
+        else:
+            answer_audio_id = request.data.get('answer_audio_id')
+            if answer_audio_id:
+                from media.models import MediaAsset
+                try:
+                    answer_audio = MediaAsset.objects.get(id=answer_audio_id)
+                    audio_id = answer_audio.id
+                except MediaAsset.DoesNotExist:
+                    return self.error_response(message='音频资源不存在')
         
         # 创建答题记录
         response = LsaResponse.objects.create(
@@ -374,9 +459,18 @@ class LsaSubmitAnswerView(APIView, ResponseMixin):
             is_timeout=is_timeout
         )
         
+        # 如果提供了模块ID，关联到该模块
+        if module_id:
+            try:
+                module = ExamModule.objects.get(id=module_id)
+                response.modules.add(module)
+            except ExamModule.DoesNotExist:
+                pass  # 模块不存在，继续处理，不影响主流程
+        
         return self.success_response(
             data={
                 'response_id': response.id,
+                'audio_id': audio_id,
                 'is_timeout': is_timeout
             },
             message='答题记录已保存'
@@ -458,9 +552,9 @@ class LsaDialogQuestionsView(APIView, ResponseMixin):
         is_active = is_active_param.lower() == 'true'
         
         if is_active:
-            questions = dialog.questions.filter(is_active=True).order_by('display_order')
+            questions = dialog.lsa_questions.filter(is_active=True).order_by('display_order')
         else:
-            questions = dialog.questions.all().order_by('display_order')
+            questions = dialog.lsa_questions.all().order_by('display_order')
         
         serializer = LsaQuestionSerializer(questions, many=True)
         return self.success_response(data=serializer.data, message='查询成功')
@@ -479,21 +573,17 @@ class LsaQuestionListView(APIView, ResponseMixin):
     def get(self, request):
         is_active = request.query_params.get('is_active')
         dialog = request.query_params.get('dialog')
-        question_type = request.query_params.get('question_type')
         
-        queryset = LsaQuestion.objects.select_related('dialog').all()
+        queryset = LsaQuestion.objects.prefetch_related('dialog').all()
         
         if is_active is not None:
             is_active_bool = is_active.lower() == 'true'
             queryset = queryset.filter(is_active=is_active_bool)
         
         if dialog:
-            queryset = queryset.filter(dialog_id=dialog)
+            queryset = queryset.filter(dialog__id=dialog)
         
-        if question_type:
-            queryset = queryset.filter(question_type=question_type)
-        
-        queryset = queryset.order_by('dialog', 'display_order')
+        queryset = queryset.order_by('display_order', '-created_at')
         
         paginator = LsaPagination()
         page = paginator.paginate_queryset(queryset, request)

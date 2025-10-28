@@ -129,11 +129,11 @@ class MediaAsset(models.Model):
             audio = File(file_path)
             
             if audio is None:
-                logger.error(f"Mutagen无法识别文件类型: {file_path}")
+                logger.warning(f"Mutagen无法识别文件类型: {file_path}，文件仍会正常保存")
                 return None
             
             if audio.info is None:
-                logger.error(f"Mutagen无法解析音频流信息，文件可能已损坏: {file_path}")
+                logger.warning(f"Mutagen无法解析音频流信息，文件可能已损坏: {file_path}，文件仍会正常保存")
                 return None
             
             # 提取音频信息
@@ -163,7 +163,9 @@ class MediaAsset(models.Model):
         except ImportError:
             logger.warning("mutagen库未安装，无法自动识别音频信息。请运行: pip install mutagen")
         except Exception as e:
-            logger.error(f"读取音频信息失败: {str(e)}", exc_info=True)
+            # 音频信息读取失败不影响文件保存，仅记录警告
+            logger.warning(f"读取音频信息失败: {str(e)}，文件仍会正常保存（无元数据）")
+            logger.debug(f"音频信息读取详细错误: {str(e)}", exc_info=True)
         return None
     
     def _get_video_duration(self, file_path):
@@ -215,8 +217,8 @@ class MediaAsset(models.Model):
                         self.duration_ms = duration
                         logger.info(f"自动识别视频时长: {duration}ms")
                 
-                # 如果是新记录且识别到信息，需要再次更新
-                if is_new and (self.duration_ms or self.bitrate or self.sample_rate):
+                # 如果是新记录且已经保存过，更新元数据后直接返回
+                if is_new:
                     update_fields = {}
                     if self.duration_ms:
                         update_fields['duration_ms'] = self.duration_ms
@@ -225,8 +227,14 @@ class MediaAsset(models.Model):
                     if self.sample_rate:
                         update_fields['sample_rate'] = self.sample_rate
                     
+                    # 无论是否识别到元数据，都更新 URI
+                    if not self.uri and self.file:
+                        update_fields['uri'] = self.file.url
+                    
                     if update_fields:
                         MediaAsset.objects.filter(pk=self.pk).update(**update_fields)
+                    # 已经保存过了，直接返回
+                    return
         
         # 保存（如果还未保存）
         if self.pk is None:
